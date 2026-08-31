@@ -1,0 +1,51 @@
+{
+    "name": "codex-split",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "dev": "npm run build && wrangler pages dev ../dist --cwd pages --env-file ../.dev.vars --persist-to ../.wrangler/state/v3",
+        "dev:ui": "vite dev",
+        "build:agent": "sh scripts/build-agent.sh",
+        "build": "tsc --noEmit && vite build",
+        "preview": "npm run build && vite preview",
+        "deploy": "npm run deploy:pages",
+        "deploy:pages": "npm run build && wrangler pages deploy ../dist --project-name codex-split --cwd pages",
+        "deploy:worker": "npm run typecheck && wrangler deploy",
+        "test": "vitest run",
+        "typecheck": "tsc --noEmit",
+        "format": "prettier --write src worker pages test *.json *.jsonc *.ts *.html *.md",
+        "format:check": "prettier --check src worker pages test *.json *.jsonc *.ts *.html *.md",
+        "lint": "eslint src worker pages/functions test",
+        "db:migrate:local": "wrangler d1 migrations apply codex-split --local",
+        "db:migrate:remote": "wrangler d1 migrations apply codex-split --remote",
+        "cf-typegen": "wrangler types",
+        "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
+    },
+    "dependencies": {
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0"
+    },
+    "devDependencies": {
+        "@cloudflare/vitest-plugin": "^1.1.2",
+        "@cloudflare/workers-types": "^5.20260829.1",
+        "@eslint/js": "^9.39.5",
+        "@types/react": "^19.2.0",
+        "@types/react-dom": "^19.2.0",
+        "@vitejs/plugin-react": "^5.2.0",
+        "eslint": "^9.39.5",
+        "eslint-config-prettier": "^10.1.8",
+        "eslint-plugin-react": "^7.37.5",
+        "eslint-plugin-react-hooks": "^7.0.1",
+        "globals": "^16.4.0",
+        "prettier": "^3.6.2",
+        "typescript": "^5.9.2",
+        "typescript-eslint": "^8.46.0",
+        "vite": "^7.3.6",
+        "vitest": "^4.1.11",
+        "wrangler": "^4.127.1"
+    },
+    "overrides": {
+        "brace-expansion": "1.1.18"
+    }
+}

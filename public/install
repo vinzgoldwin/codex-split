@@ -1,0 +1,106 @@
+#!/bin/sh
+set -eu
+
+server="${CODEX_SPLIT_SERVER:-https://codex-split.pages.dev}"
+collector_version="0.1.0"
+install_dir="${HOME}/.local/bin"
+binary="${install_dir}/codex-split"
+
+case "$(uname -s)" in
+    Darwin) platform="macos" ;;
+    Linux) platform="linux" ;;
+    *) echo "Codex Split supports macOS and Linux." >&2; exit 1 ;;
+esac
+
+case "$(uname -m)" in
+    arm64|aarch64) architecture="aarch64" ;;
+    x86_64|amd64) architecture="x86_64" ;;
+    *) echo "Codex Split supports x86_64 and ARM64 devices." >&2; exit 1 ;;
+esac
+
+asset="codex-split-${platform}-${architecture}-${collector_version}"
+temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-split.XXXXXX")"
+trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
+
+echo "Installing Codex Split..."
+curl -fsSL "${server}/downloads/${asset}" -o "${temporary_dir}/codex-split"
+curl -fsSL "${server}/downloads/${asset}.sha256" -o "${temporary_dir}/codex-split.sha256"
+
+magic="$(od -An -tx1 -N4 "${temporary_dir}/codex-split" | tr -d ' \n')"
+case "$platform:$magic" in
+    linux:7f454c46|macos:cffaedfe|macos:feedfacf) ;;
+    *) echo "No published Codex Split build for ${platform} ${architecture}." >&2; exit 1 ;;
+esac
+
+expected="$(awk '{print $1}' "${temporary_dir}/codex-split.sha256")"
+case "$expected" in
+    ''|*[!0-9a-fA-F]*) echo "The published collector checksum is invalid." >&2; exit 1 ;;
+esac
+[ "${#expected}" -eq 64 ] || { echo "The published collector checksum is invalid." >&2; exit 1; }
+if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "${temporary_dir}/codex-split" | awk '{print $1}')"
+else
+    actual="$(shasum -a 256 "${temporary_dir}/codex-split" | awk '{print $1}')"
+fi
+[ "$expected" = "$actual" ] || { echo "Collector checksum did not match." >&2; exit 1; }
+
+mkdir -p "$install_dir"
+chmod 755 "${temporary_dir}/codex-split"
+mv -f "${temporary_dir}/codex-split" "$binary"
+
+"$binary" setup --server "$server"
+
+if [ "$platform" = "linux" ]; then
+    command -v systemctl >/dev/null 2>&1 || {
+        echo "Installed and registered, but systemd is unavailable. Run 'codex-split run' to sync." >&2
+        exit 1
+    }
+    service_dir="${HOME}/.config/systemd/user"
+    mkdir -p "$service_dir"
+    sed "s|__BINARY__|${binary}|g" > "${service_dir}/codex-split.service" <<'EOF'
+[Unit]
+Description=Codex Split usage collector
+After=network-online.target
+
+[Service]
+ExecStart="__BINARY__" run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable --now codex-split.service
+else
+    service_dir="${HOME}/Library/LaunchAgents"
+    service_file="${service_dir}/dev.codex-split.collector.plist"
+    mkdir -p "$service_dir"
+    sed "s|__BINARY__|${binary}|g; s|__HOME__|${HOME}|g" > "$service_file" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.codex-split.collector</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BINARY__</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/codex-split.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/codex-split.log</string>
+</dict>
+</plist>
+EOF
+    launchctl bootout "gui/$(id -u)/dev.codex-split.collector" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$service_file"
+fi
+
+echo "Codex Split is installed, registered, and running."

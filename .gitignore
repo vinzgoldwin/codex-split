@@ -1,0 +1,11 @@
+.DS_Store
+.env*
+.dev.vars*
+!.dev.vars.example
+.wrangler
+**/.config/go/
+dist
+node_modules
+database
+vendor
+npm-debug.log

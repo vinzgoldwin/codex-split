@@ -1,0 +1,17 @@
+{
+    "$schema": "../node_modules/wrangler/config-schema.json",
+    "name": "codex-split",
+    "pages_build_output_dir": "../dist",
+    "compatibility_date": "2026-08-29",
+    "d1_databases": [
+        {
+            "binding": "DB",
+            "database_name": "codex-split",
+            "database_id": "b9ed884b-3312-479d-859a-b8dd983a7787",
+        },
+    ],
+    "vars": {
+        "TRACKER_WARNING_PERCENT": "90",
+        "RETENTION_DAYS": "30",
+    },
+}

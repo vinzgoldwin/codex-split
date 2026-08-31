@@ -1,0 +1,30 @@
+export interface Device {
+    id: string;
+    name: string;
+    platform: string;
+    lastSeenAt: string | null;
+    online: boolean;
+}
+
+export interface Member {
+    id: number;
+    name: string;
+    active: boolean;
+    allocation: number;
+    used: number;
+    shareUsed: number;
+    cost: number;
+    devices: Device[];
+}
+
+export interface DashboardData {
+    viewer: { id: number; name: string };
+    account: { used: number; resetsAt: string; sampledAt: string; unattributed: number } | null;
+    members: Member[];
+    warningPercent: number;
+}
+
+export interface MemberOption {
+    id: number;
+    name: string;
+}

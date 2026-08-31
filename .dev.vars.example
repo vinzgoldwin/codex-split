@@ -1,0 +1,3 @@
+TRACKER_PASSWORD=Akashi
+AUTH_SECRET=replace-with-a-long-random-value
+CHATGPT_ACCOUNT_EMAIL=shared-account@example.com
