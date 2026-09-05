@@ -13,7 +13,11 @@ export interface Member {
     allocation: number;
     used: number;
     shareUsed: number;
-    cost: number;
+    weeklyCost: number;
+    todayCost: number;
+    todayTokens: number;
+    thirtyDayCost: number;
+    thirtyDayTokens: number;
     devices: Device[];
 }
 

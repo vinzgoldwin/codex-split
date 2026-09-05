@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,6 +43,8 @@ type pairingStatus struct {
 }
 
 type syncPayload struct {
+	Protocol     int       `json:"protocol"`
+	Sequence     uint64    `json:"sequence"`
 	BatchID      string    `json:"batch_id"`
 	ReportedAt   time.Time `json:"reported_at"`
 	Usage        []usage   `json:"usage"`
@@ -76,6 +79,17 @@ func run(args []string) error {
 			return errors.New("usage: codex-split setup --server URL")
 		}
 		return setup(strings.TrimRight(*server, "/"))
+	case "stage-update":
+		return stageUpdate()
+	case "tick":
+		current, err := loadState()
+		if err != nil {
+			return err
+		}
+		if current.Pending == nil && time.Now().Before(current.NextSync) {
+			return nil
+		}
+		return syncOnce()
 	case "sync":
 		if len(args) != 1 {
 			return errors.New("usage: codex-split sync")
@@ -84,7 +98,7 @@ func run(args []string) error {
 	case "run":
 		flags := flag.NewFlagSet("run", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
-		interval := flags.Int("interval", 60, "seconds between syncs")
+		interval := flags.Int("interval", 300, "seconds between syncs")
 		if err := flags.Parse(args[1:]); err != nil || *interval < 15 {
 			return errors.New("usage: codex-split run [--interval SECONDS], minimum 15")
 		}
@@ -110,6 +124,23 @@ func run(args []string) error {
 }
 
 func setup(server string) error {
+	configPath, err := dataPath("config.json")
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(configPath); err == nil {
+		stored, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		if stored.Server != server {
+			return errors.New("device is already paired with a different server")
+		}
+		fmt.Println("Existing pairing and usage checkpoint preserved.")
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	codexPath, err := exec.LookPath("codex")
 	if err != nil {
 		return errors.New("Codex is not installed; install it and run `codex login` first")
@@ -182,28 +213,51 @@ func syncOnce() error {
 	if err != nil {
 		return err
 	}
+	// A TCP lock is released by the OS on crashes, including on Windows.
+	lock, err := net.Listen("tcp", "127.0.0.1:47653")
+	if err != nil {
+		return errors.New("another collector sync is running")
+	}
+	defer lock.Close()
 	next, err := loadState()
 	if err != nil {
 		return err
 	}
-	collected, err := collectUsage(next, stored.CodexHome)
-	if err != nil {
+	if next.Pending == nil {
+		collected, err := collectUsage(next, stored.CodexHome)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		currentQuota, _ := readWeeklyQuota(ctx, stored.CodexPath)
+		cancel()
+		next.Sequence++
+		next.Pending = &syncPayload{Protocol: 2, Sequence: next.Sequence, BatchID: uuid(), ReportedAt: time.Now().UTC(), Usage: collected, Quota: currentQuota, AgentVersion: version}
+		if err := saveState(next); err != nil {
+			return err
+		}
+	}
+	var reply struct {
+		SyncInterval int `json:"sync_interval_seconds"`
+		IdleInterval int `json:"idle_interval_seconds"`
+	}
+	if err := apiJSON(http.MethodPost, stored.Server+"/api/sync", stored.Token, next.Pending, &reply); err != nil {
 		return err
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	currentQuota, _ := readWeeklyQuota(ctx, stored.CodexPath)
-	cancel()
-	payload := syncPayload{
-		BatchID:      uuid(),
-		ReportedAt:   time.Now().UTC(),
-		Usage:        collected,
-		Quota:        currentQuota,
-		AgentVersion: version,
+	interval := reply.SyncInterval
+	if len(next.Pending.Usage) == 0 {
+		interval = reply.IdleInterval
 	}
-	if err := apiJSON(http.MethodPost, stored.Server+"/api/sync", stored.Token, payload, nil); err != nil {
-		return err
+	if interval < 60 || interval > 3600 {
+		interval = 300
 	}
+	// Drain an offline backlog gradually without an unbounded request burst.
+	if len(next.Pending.Usage) == 128 {
+		interval = 60
+	}
+	next.Pending = nil
+	next.Interval = interval
+	next.NextSync = time.Now().Add(time.Duration(interval) * time.Second)
 	if err := saveState(next); err != nil {
 		return err
 	}

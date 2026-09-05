@@ -7,20 +7,34 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"time"
 )
 
 type state struct {
-	Offsets map[string]int64  `json:"offsets"`
-	Models  map[string]string `json:"models"`
+	Offsets  map[string]int64       `json:"offsets"`
+	Contexts map[string]*logContext `json:"contexts"`
+	Sequence uint64                 `json:"sequence"`
+	Pending  *syncPayload           `json:"pending,omitempty"`
+	Interval int                    `json:"interval,omitempty"`
+	NextSync time.Time              `json:"next_sync,omitempty"`
+}
+
+type logContext struct {
+	Model string  `json:"model"`
+	Tier  string  `json:"tier"`
+	Total *uint64 `json:"total,omitempty"`
 }
 
 type usage struct {
-	Model             string `json:"model"`
-	InputTokens       uint64 `json:"input_tokens"`
-	CachedInputTokens uint64 `json:"cached_input_tokens"`
-	OutputTokens      uint64 `json:"output_tokens"`
+	Model                 string `json:"model"`
+	InputTokens           uint64 `json:"input_tokens"`
+	CachedInputTokens     uint64 `json:"cached_input_tokens"`
+	CacheWriteInputTokens uint64 `json:"cache_write_input_tokens"`
+	OutputTokens          uint64 `json:"output_tokens"`
+	ReasoningOutputTokens uint64 `json:"reasoning_output_tokens"`
+	ServiceTier           string `json:"service_tier"`
+	RecordedAt            string `json:"recorded_at"`
 }
 
 func baselineUsage(codexRoot string) error {
@@ -31,24 +45,22 @@ func baselineUsage(codexRoot string) error {
 			return err
 		}
 		defer file.Close()
+		ctx := &logContext{Model: "unknown", Tier: "unknown"}
 		reader := bufio.NewReader(file)
-		model := "unknown"
-		var offset int64
 		for {
-			line, readErr := reader.ReadBytes('\n')
+			line, err := reader.ReadBytes('\n')
 			if len(line) > 0 && line[len(line)-1] == '\n' {
-				offset += int64(len(line))
-				model, _ = parseLogLine(line, model)
+				baseline.Offsets[path] += int64(len(line))
+				parseUsageLine(line, ctx)
 			}
-			if readErr != nil {
-				if readErr == io.EOF {
-					break
-				}
-				return readErr
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
 			}
 		}
-		baseline.Offsets[path] = offset
-		baseline.Models[path] = model
+		baseline.Contexts[path] = ctx
 		return nil
 	})
 	if err != nil {
@@ -57,8 +69,11 @@ func baselineUsage(codexRoot string) error {
 	return saveState(baseline)
 }
 
+// Preserve request boundaries. One upload covers at most 128 records from one UTC day.
 func collectUsage(next *state, codexRoot string) ([]usage, error) {
-	totals := map[string]*usage{}
+	result := []usage{}
+	day := ""
+	stop := errors.New("batch full")
 	err := walkSessions(codexRoot, func(path string) error {
 		file, err := os.Open(path)
 		if err != nil {
@@ -72,100 +87,139 @@ func collectUsage(next *state, codexRoot string) ([]usage, error) {
 		offset := next.Offsets[path]
 		if offset < 0 || offset > info.Size() {
 			offset = 0
+			delete(next.Contexts, path)
 		}
-		if _, err := file.Seek(offset, io.SeekStart); err != nil {
-			return err
-		}
-
-		reader := bufio.NewReader(file)
-		model := next.Models[path]
-		if model == "" {
-			model = "unknown"
-		}
-		committed := offset
-		for {
-			line, readErr := reader.ReadBytes('\n')
-			if len(line) > 0 && line[len(line)-1] == '\n' {
-				committed += int64(len(line))
-				var sample *usage
-				model, sample = parseLogLine(line, model)
-				if sample != nil {
-					total := totals[model]
-					if total == nil {
-						total = &usage{Model: model}
-						totals[model] = total
-					}
-					total.InputTokens += sample.InputTokens
-					total.CachedInputTokens += sample.CachedInputTokens
-					total.OutputTokens += sample.OutputTokens
+		ctx := next.Contexts[path]
+		if ctx == nil {
+			ctx = &logContext{Model: "unknown", Tier: "unknown"}
+			// Reconstruct settings and cumulative counters before the old checkpoint once.
+			reader := bufio.NewReader(io.LimitReader(file, offset))
+			for {
+				line, readErr := reader.ReadBytes('\n')
+				if len(line) > 0 {
+					parseUsageLine(line, ctx)
 				}
-			}
-			if readErr != nil {
 				if readErr == io.EOF {
 					break
 				}
+				if readErr != nil {
+					return readErr
+				}
+			}
+			next.Contexts[path] = ctx
+		}
+		if _, err = file.Seek(offset, io.SeekStart); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(file)
+		for {
+			line, readErr := reader.ReadBytes('\n')
+			if len(line) > 0 && line[len(line)-1] == '\n' {
+				previous := *ctx
+				sample := parseUsageLine(line, ctx)
+				if sample != nil {
+					eventTime, err := time.Parse(time.RFC3339Nano, sample.RecordedAt)
+					if err != nil {
+						return errors.New("usage record has no valid timestamp")
+					}
+					sample.RecordedAt = eventTime.UTC().Format(time.RFC3339Nano)
+					sampleDay := eventTime.UTC().Format("2006-01-02")
+					if day != "" && day != sampleDay {
+						*ctx = previous
+						return stop
+					}
+					day = sampleDay
+					result = append(result, *sample)
+				}
+				offset += int64(len(line))
+				next.Offsets[path] = offset
+				if len(result) >= 128 {
+					return stop
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
 				return readErr
 			}
 		}
-		next.Offsets[path] = committed
-		next.Models[path] = model
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, stop) {
 		return nil, err
-	}
-
-	models := make([]string, 0, len(totals))
-	for model := range totals {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-	result := make([]usage, 0, len(models))
-	for _, model := range models {
-		result = append(result, *totals[model])
 	}
 	return result, nil
 }
 
-func parseLogLine(line []byte, currentModel string) (string, *usage) {
+// Only numeric counters and explicit model/tier metadata leave the device.
+func parseUsageLine(line []byte, ctx *logContext) *usage {
 	var event struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
+		Type      string `json:"type"`
+		Timestamp string `json:"timestamp"`
+		Payload   struct {
+			Type           string          `json:"type"`
+			Model          string          `json:"model"`
+			ServiceTier    json.RawMessage `json:"service_tier"`
+			ThreadSettings *struct {
+				Model       string          `json:"model"`
+				ServiceTier json.RawMessage `json:"service_tier"`
+			} `json:"thread_settings"`
+			Info *struct {
+				Last  *usage `json:"last_token_usage"`
+				Total *struct {
+					Total *uint64 `json:"total_tokens"`
+				} `json:"total_token_usage"`
+			} `json:"info"`
+		} `json:"payload"`
 	}
 	if json.Unmarshal(line, &event) != nil {
-		return currentModel, nil
+		return nil
 	}
+	p := event.Payload
 	if event.Type == "turn_context" {
-		var payload struct {
-			Model string `json:"model"`
+		if p.Model != "" {
+			ctx.Model = p.Model
 		}
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.Model != "" {
-			return payload.Model, nil
+		if len(p.ServiceTier) > 0 {
+			ctx.Tier = parseTier(p.ServiceTier)
 		}
-		return currentModel, nil
 	}
 	if event.Type != "event_msg" {
-		return currentModel, nil
+		return nil
 	}
-	var payload struct {
-		Type string `json:"type"`
-		Info *struct {
-			LastTokenUsage *struct {
-				InputTokens       uint64 `json:"input_tokens"`
-				CachedInputTokens uint64 `json:"cached_input_tokens"`
-				OutputTokens      uint64 `json:"output_tokens"`
-			} `json:"last_token_usage"`
-		} `json:"info"`
+	if p.Type == "thread_settings_applied" && p.ThreadSettings != nil {
+		if p.ThreadSettings.Model != "" {
+			ctx.Model = p.ThreadSettings.Model
+		}
+		ctx.Tier = parseTier(p.ThreadSettings.ServiceTier)
 	}
-	if json.Unmarshal(event.Payload, &payload) != nil || payload.Type != "token_count" || payload.Info == nil || payload.Info.LastTokenUsage == nil {
-		return currentModel, nil
+	if p.Type != "token_count" || p.Info == nil || p.Info.Last == nil {
+		return nil
 	}
-	return currentModel, &usage{
-		Model:             currentModel,
-		InputTokens:       payload.Info.LastTokenUsage.InputTokens,
-		CachedInputTokens: payload.Info.LastTokenUsage.CachedInputTokens,
-		OutputTokens:      payload.Info.LastTokenUsage.OutputTokens,
+	if p.Info.Total != nil && p.Info.Total.Total != nil {
+		total := *p.Info.Total.Total
+		if ctx.Total != nil && *ctx.Total == total {
+			return nil
+		}
+		ctx.Total = &total
 	}
+	sample := p.Info.Last
+	sample.Model = ctx.Model
+	sample.ServiceTier = ctx.Tier
+	sample.RecordedAt = event.Timestamp
+	return sample
+}
+
+func parseTier(raw json.RawMessage) string {
+	if string(raw) == "null" {
+		return "default"
+	}
+	var tier string
+	if json.Unmarshal(raw, &tier) != nil || tier == "" {
+		return "unknown"
+	}
+	return tier
 }
 
 func walkSessions(codexRoot string, visit func(string) error) error {
@@ -185,11 +239,9 @@ func walkSessions(codexRoot string, visit func(string) error) error {
 		return nil
 	})
 }
-
 func newState() *state {
-	return &state{Offsets: map[string]int64{}, Models: map[string]string{}}
+	return &state{Offsets: map[string]int64{}, Contexts: map[string]*logContext{}, Interval: 300}
 }
-
 func loadState() (*state, error) {
 	path, err := dataPath("state.json")
 	if err != nil {
@@ -203,21 +255,18 @@ func loadState() (*state, error) {
 		return nil, err
 	}
 	result := newState()
-	if err := json.Unmarshal(data, result); err != nil {
+	if err = json.Unmarshal(data, result); err != nil {
 		return nil, err
 	}
 	if result.Offsets == nil {
 		result.Offsets = map[string]int64{}
 	}
-	if result.Models == nil {
-		result.Models = map[string]string{}
+	if result.Contexts == nil {
+		result.Contexts = map[string]*logContext{}
 	}
 	return result, nil
 }
-
-func saveState(value *state) error {
-	return writePrivateJSON("state.json", value)
-}
+func saveState(value *state) error { return writePrivateJSON("state.json", value) }
 
 func codexHome() string {
 	if configured := os.Getenv("CODEX_HOME"); configured != "" {
@@ -269,27 +318,34 @@ func saveConfig(value config) error {
 	return writePrivateJSON("config.json", value)
 }
 
+// Write checkpoints atomically so a crash cannot truncate the upload ledger.
 func writePrivateJSON(name string, value any) error {
 	path, err := dataPath(name)
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".checkpoint-*")
 	if err != nil {
 		return err
 	}
-	if err := file.Chmod(0600); err != nil {
-		file.Close()
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	if err = file.Chmod(0600); err == nil {
+		_, err = file.Write(data)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
 		return err
 	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
+	if closeErr != nil {
+		return closeErr
 	}
-	return file.Close()
+	return os.Rename(temporary, path)
 }

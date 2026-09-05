@@ -2,6 +2,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { api, ApiRequestError } from './api';
 import type { DashboardData, MemberOption } from './types';
 
+const tokenFormatter = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+
 function relativeTime(value: string | null) {
     if (!value) return 'Never';
     const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
@@ -10,6 +12,15 @@ function relativeTime(value: string | null) {
     const minutes = Math.round(seconds / 60);
     if (Math.abs(minutes) < 60) return formatter.format(minutes, 'minute');
     return formatter.format(Math.round(minutes / 60), 'hour');
+}
+
+function compactRelativeTime(value: string | null) {
+    if (!value) return 'Never';
+    const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+    if (seconds < 60) return 'now';
+    if (seconds < 60 * 60) return `${Math.round(seconds / 60)} m`;
+    if (seconds < 48 * 60 * 60) return `${Math.round(seconds / (60 * 60))} h`;
+    return `${Math.round(seconds / (24 * 60 * 60))} d`;
 }
 
 function Loading() {
@@ -143,6 +154,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
     const [memberName, setMemberName] = useState('');
     const [error, setError] = useState('');
     const alerts = useMemo(() => members.filter((member) => member.shareUsed >= warningPercent), [members, warningPercent]);
+    const weeklyShare = members.find((member) => member.allocation > 0)?.allocation;
     const installCommand = /Windows/i.test(navigator.userAgent)
         ? `irm ${window.location.origin}/install.ps1 | iex`
         : `curl -fsSL ${window.location.origin}/install | sh`;
@@ -150,7 +162,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
     useEffect(() => {
         const interval = window.setInterval(() => {
             if (document.visibilityState === 'visible') void reload();
-        }, 30_000);
+        }, 5 * 60_000);
         return () => window.clearInterval(interval);
     }, [reload]);
 
@@ -206,7 +218,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
             )}
 
             <section className="account-overview">
-                <div>
+                <div className="account-usage">
                     <p className="eyebrow">Weekly account usage</p>
                     <div className="account-number">
                         {account ? account.used.toFixed(1) : '—'}
@@ -218,11 +230,19 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                         <>
                             <span>
                                 Resets{' '}
-                                {new Intl.DateTimeFormat('en', { weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(
-                                    new Date(account.resetsAt),
-                                )}
+                                {new Intl.DateTimeFormat('en', {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric',
+                                    hour: 'numeric',
+                                    minute: '2-digit',
+                                }).format(new Date(account.resetsAt))}
                             </span>
-                            <small>Updated {relativeTime(account.sampledAt)}</small>
+                            <small className="updated-at">Updated {relativeTime(account.sampledAt)}</small>
+                            <small className="member-split">
+                                {members.length} {members.length === 1 ? 'member' : 'members'}
+                                {weeklyShare ? `, ${weeklyShare.toFixed(1)}% each` : ''}
+                            </small>
                         </>
                     ) : (
                         <span>Waiting for the first connected device</span>
@@ -231,8 +251,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
             </section>
 
             <section className="members-section">
-                <div className="section-heading members-heading">
-                    <h2>Members</h2>
+                <div className="members-heading">
                     <div className="heading-actions">
                         <details className="action-menu">
                             <summary>Add device</summary>
@@ -256,10 +275,9 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                 <div className="member-table" role="table" aria-label="Member usage">
                     <div className="table-row table-header" role="row">
                         <span>Member</span>
-                        <span>Weekly share</span>
                         <span>Usage</span>
                         <span>Devices</span>
-                        <span>30d estimate</span>
+                        <span>Weekly cost</span>
                     </div>
                     {members.map((member) => (
                         <div className="member-group" key={member.id}>
@@ -281,56 +299,77 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                         </button>
                                     )}
                                 </div>
-                                <span>{member.allocation ? `${member.allocation.toFixed(1)}%` : 'Next reset'}</span>
                                 <div className="member-usage">
-                                    <span>{member.used.toFixed(2)}% account</span>
+                                    <div className="usage-summary">
+                                        <span>{member.used.toFixed(2)}% account</span>
+                                        <small>{member.shareUsed.toFixed(0)}% share</small>
+                                    </div>
                                     <div className="mini-meter">
                                         <span
                                             className={member.shareUsed >= warningPercent ? 'danger' : ''}
                                             style={{ width: `${Math.min(member.shareUsed, 100)}%` }}
                                         />
                                     </div>
-                                    <small>{member.shareUsed.toFixed(0)}% of share</small>
                                 </div>
-                                <span>{member.devices.length} connected</span>
-                                <span>${member.cost.toFixed(2)}</span>
+                                <div className="member-devices">
+                                    {member.devices.length === 0 && <span className="no-devices">None</span>}
+                                    {member.devices.map((device) => (
+                                        <details className="device-details" key={device.id}>
+                                            <summary>
+                                                <span className={device.online ? 'status-dot online' : 'status-dot'} />
+                                                <span className="device-label" title={device.name}>
+                                                    {device.name}
+                                                </span>
+                                            </summary>
+                                            <div className="device-meta">
+                                                <span>{compactRelativeTime(device.lastSeenAt)}</span>
+                                                <button
+                                                    className="text-button danger-text"
+                                                    onClick={() => {
+                                                        if (window.confirm(`Revoke ${device.name}?`)) {
+                                                            void mutate(`/api/devices/${device.id}`, { method: 'DELETE' }, 'Device revoked.');
+                                                        }
+                                                    }}
+                                                >
+                                                    Revoke
+                                                </button>
+                                            </div>
+                                        </details>
+                                    ))}
+                                </div>
+                                <details className="cost-details">
+                                    <summary>${member.weeklyCost.toFixed(2)}</summary>
+                                    <div className="cost-panel">
+                                        <span className="cost-context">Estimated API-equivalent values</span>
+                                        <div>
+                                            <span>Today</span>
+                                            <strong>${member.todayCost.toFixed(2)}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Last 30 days</span>
+                                            <strong>${member.thirtyDayCost.toFixed(2)}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Tokens today</span>
+                                            <strong>{tokenFormatter.format(member.todayTokens)}</strong>
+                                        </div>
+                                        <div>
+                                            <span>Tokens, 30 days</span>
+                                            <strong>{tokenFormatter.format(member.thirtyDayTokens)}</strong>
+                                        </div>
+                                    </div>
+                                </details>
                             </div>
-                            {member.devices.map((device) => (
-                                <div className="device-row" key={device.id}>
-                                    <span className={device.online ? 'status-dot online' : 'status-dot'} />
-                                    <span>{device.name}</span>
-                                    <span>{device.platform}</span>
-                                    <span>{relativeTime(device.lastSeenAt)}</span>
-                                    <button
-                                        className="text-button danger-text"
-                                        onClick={() => {
-                                            if (window.confirm(`Revoke ${device.name}?`)) {
-                                                void mutate(`/api/devices/${device.id}`, { method: 'DELETE' }, 'Device revoked.');
-                                            }
-                                        }}
-                                    >
-                                        Revoke
-                                    </button>
-                                </div>
-                            ))}
                         </div>
                     ))}
-                    {account && account.unattributed > 0.001 && (
-                        <div className="table-row unattributed-row">
-                            <strong>Unattributed</strong>
-                            <span />
-                            <span>{account.unattributed.toFixed(2)}% account</span>
-                            <span />
-                            <span />
-                        </div>
-                    )}
                 </div>
+                {account && account.unattributed > 0.001 && (
+                    <div className="unattributed-summary">
+                        <strong>Unattributed usage</strong>
+                        <span>{account.unattributed.toFixed(2)}% account, not linked to a member</span>
+                    </div>
+                )}
             </section>
-
-            <footer>
-                <span>Dollar values are API-rate equivalents, not charges.</span>
-                <span>Token counters only. Content stays on each device.</span>
-            </footer>
         </main>
     );
 }

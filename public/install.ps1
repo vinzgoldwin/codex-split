@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Server = if ($env:CODEX_SPLIT_SERVER) { $env:CODEX_SPLIT_SERVER.TrimEnd('/') } else { 'https://codex-split.pages.dev' }
-$CollectorVersion = '0.1.0'
+$CollectorVersion = '0.2.0'
 $Architecture = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
     'X64' { 'x86_64' }
     'Arm64' { 'aarch64' }
@@ -32,13 +32,39 @@ try {
     $Actual = (Get-FileHash -Algorithm SHA256 $Download).Hash
     if ($Expected -ne $Actual) { throw 'Collector checksum did not match.' }
 
+    $ExistingTask = Get-ScheduledTask -TaskName 'Codex Split Collector' -ErrorAction SilentlyContinue
+    if ($ExistingTask) {
+        Stop-ScheduledTask -TaskName 'Codex Split Collector'
+        Start-Sleep -Seconds 2
+    }
+    # Stop only this installed collector, not other applications.
+    Get-Process -Name 'codex-split' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Binary } | Stop-Process -Force
     Move-Item -Force $Download $Binary
     & $Binary setup --server $Server
     if ($LASTEXITCODE -ne 0) { throw 'Device setup failed.' }
 
-    $Action = New-ScheduledTaskAction -Execute $Binary -Argument 'run'
+    $Launcher = Join-Path $InstallDirectory 'launcher.ps1'
+    @'
+$ErrorActionPreference = 'Continue'
+$Binary = Join-Path $PSScriptRoot 'codex-split.exe'
+while ($true) {
+    & $Binary stage-update
+    $Staged = "$Binary.next.exe"
+    if (Test-Path $Staged) {
+        try {
+            Copy-Item -Force $Binary "$Binary.previous"
+            Move-Item -Force $Staged $Binary -ErrorAction Stop
+            & $Binary version
+            if ($LASTEXITCODE -ne 0) { Move-Item -Force "$Binary.previous" $Binary }
+        } catch { Write-Warning $_ }
+    }
+    & $Binary tick
+    Start-Sleep -Seconds 60
+}
+'@ | Set-Content -Encoding UTF8 $Launcher
+    $Action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`""
     $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName 'Codex Split Collector' -Action $Action -Trigger $Trigger -Settings $Settings -Force | Out-Null
     Start-ScheduledTask -TaskName 'Codex Split Collector'
 

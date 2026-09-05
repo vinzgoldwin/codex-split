@@ -43,7 +43,6 @@ a {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid #2a2a28;
 }
 .wordmark {
     font:
@@ -92,6 +91,9 @@ a {
     justify-content: space-between;
     padding: 60px 0 44px;
 }
+.account-usage {
+    padding: 14px 0 12px;
+}
 .eyebrow {
     margin: 0 0 8px;
     color: #a5a5a0;
@@ -101,7 +103,7 @@ a {
 }
 .account-number {
     font:
-        500 clamp(68px, 10vw, 128px) / 0.85 ui-monospace,
+        500 clamp(64px, 8vw, 104px) / 0.95 ui-monospace,
         SFMono-Regular,
         Menlo,
         monospace;
@@ -120,29 +122,27 @@ a {
     gap: 6px;
     font-size: 14px;
 }
-.reset-copy small,
-footer {
+.reset-copy small {
     color: #777772;
+}
+.reset-copy .updated-at {
+    margin-bottom: 6px;
+}
+.reset-copy .member-split {
+    padding: 4px 8px;
+    border: 1px solid #353532;
+    border-radius: 999px;
+    color: #a5a5a0;
+    line-height: 1;
 }
 .members-section {
-    border-top: 1px solid #2a2a28;
     padding: 22px 0 38px;
 }
-.section-heading {
+.members-heading {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
-    margin-bottom: 28px;
-}
-.section-heading h1,
-.section-heading h2 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-}
-.section-heading > span {
-    color: #777772;
-    font-size: 12px;
+    margin-bottom: 10px;
 }
 .mini-meter {
     overflow: hidden;
@@ -153,9 +153,6 @@ footer {
     height: 100%;
     background: #f4f4f0;
     transition: width 0.2s ease;
-}
-.members-heading {
-    margin-bottom: 10px;
 }
 .action-menu {
     position: relative;
@@ -219,15 +216,17 @@ footer {
     color: #ff7a70 !important;
 }
 .member-table {
-    border-top: 1px solid #2a2a28;
+    border-bottom: 1px solid #242422;
 }
 .table-row {
     display: grid;
-    grid-template-columns: 1.35fr 0.8fr 1.25fr 0.8fr 0.7fr;
+    grid-template-columns: 1fr 1.45fr 1.3fr 0.75fr;
     gap: 24px;
     align-items: center;
     min-height: 64px;
-    border-bottom: 1px solid #242422;
+}
+.member-group {
+    border-top: 1px solid #242422;
 }
 .table-header {
     min-height: 40px;
@@ -273,12 +272,15 @@ footer {
 }
 .member-usage {
     display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 5px 10px;
-    align-items: center;
+    gap: 9px;
+}
+.usage-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    align-items: baseline;
 }
 .member-usage small {
-    grid-column: 1 / -1;
     color: #777772;
 }
 .mini-meter {
@@ -288,16 +290,97 @@ footer {
 .mini-meter > span.danger {
     background: #ffb454;
 }
-.device-row {
+.member-devices {
+    min-width: 0;
     display: grid;
-    grid-template-columns: 12px 1.35fr 0.8fr 1fr auto;
-    gap: 12px;
+    gap: 9px;
+    padding: 11px 0;
+}
+.device-details {
+    min-width: 0;
+}
+.device-details summary {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr);
+    gap: 8px;
     align-items: center;
-    min-height: 38px;
-    margin-left: 28px;
-    color: #81817c;
+    list-style: none;
+    color: #a5a5a0;
+}
+.device-details summary::-webkit-details-marker {
+    display: none;
+}
+.device-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.device-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 6px 0 0 16px;
+    color: #777772;
+    font-size: 11px;
+}
+.no-devices {
+    color: #777772;
     font-size: 12px;
-    border-bottom: 1px dotted #22221f;
+}
+.cost-details {
+    position: relative;
+    width: max-content;
+}
+.cost-details summary {
+    width: max-content;
+    padding: 4px 0;
+    border-bottom: 1px solid #555550;
+    list-style: none;
+    font-weight: 650;
+}
+.cost-details summary::-webkit-details-marker {
+    display: none;
+}
+.cost-details summary::after {
+    content: '+';
+    margin-left: 7px;
+    color: #777772;
+}
+.cost-details[open] summary::after {
+    content: '−';
+}
+.cost-panel {
+    position: absolute;
+    top: calc(100% + 10px);
+    right: 0;
+    z-index: 6;
+    width: min(330px, calc(100vw - 28px));
+    padding: 18px;
+    border: 1px solid #3a3a36;
+    background: #11110f;
+    box-shadow: 0 16px 35px #000;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 28px;
+    font-family: Inter, ui-sans-serif, system-ui;
+}
+.cost-context {
+    grid-column: 1 / -1;
+    color: #858580;
+    font-size: 12px;
+}
+.cost-panel div {
+    display: grid;
+    gap: 4px;
+}
+.cost-panel div span {
+    color: #858580;
+    font-size: 12px;
+    font-weight: 600;
+}
+.cost-panel strong {
+    font-size: 16px;
 }
 .status-dot {
     width: 6px;
@@ -311,15 +394,21 @@ footer {
 .danger-text {
     color: #a06d69;
 }
-.unattributed-row {
-    color: #8e8e89;
-    font-size: 12px;
-}
-footer {
+.unattributed-summary {
     display: flex;
     justify-content: space-between;
-    padding: 18px 0 32px;
-    font-size: 11px;
+    gap: 20px;
+    padding-top: 13px;
+    color: #777772;
+    font:
+        11px/1.4 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+}
+.unattributed-summary strong {
+    color: #aaa9a3;
+    font-weight: 500;
 }
 .auth-shell {
     min-height: 100vh;
@@ -388,19 +477,14 @@ footer {
     .account-overview {
         padding: 42px 0 30px;
     }
+    .account-usage {
+        padding: 10px 0;
+    }
     .account-number {
         font-size: 68px;
     }
     .reset-copy {
         font-size: 12px;
-    }
-    .section-heading {
-        align-items: flex-start;
-        gap: 16px;
-    }
-    .section-heading > span {
-        max-width: 170px;
-        text-align: right;
     }
     .table-header {
         display: none;
@@ -413,20 +497,14 @@ footer {
     .member-usage {
         grid-column: 1 / -1;
     }
-    .device-row {
-        grid-template-columns: 12px 1fr auto;
-        margin-left: 0;
-        padding: 8px 0;
-    }
-    .device-row span:nth-child(3),
-    .device-row span:nth-child(4) {
-        display: none;
+    .member-devices {
+        grid-column: 1 / -1;
     }
     .command-panel {
         width: min(430px, calc(100vw - 28px));
     }
-    footer {
+    .unattributed-summary {
         flex-direction: column;
-        gap: 5px;
+        gap: 4px;
     }
 }

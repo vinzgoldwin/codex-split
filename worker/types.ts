@@ -5,6 +5,8 @@ export interface Env {
     CHATGPT_ACCOUNT_EMAIL: string;
     TRACKER_WARNING_PERCENT: string;
     RETENTION_DAYS: string;
+    SYNC_INTERVAL_SECONDS?: string;
+    IDLE_INTERVAL_SECONDS?: string;
 }
 
 export interface MemberRow {
@@ -26,6 +28,7 @@ export interface QuotaWindowRow {
     reset_at: number;
     duration_minutes: number;
     used_percent: number;
+    baseline_used_percent: number;
     sampled_at: number;
 }
 
@@ -34,6 +37,13 @@ export interface UsageInput {
     input_tokens: number;
     cached_input_tokens: number;
     output_tokens: number;
+}
+
+export interface RequestUsage extends UsageInput {
+    cache_write_input_tokens: number;
+    reasoning_output_tokens: number;
+    service_tier: string;
+    recorded_at: string;
 }
 
 export interface QuotaInput {

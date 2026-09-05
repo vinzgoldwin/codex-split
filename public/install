@@ -2,7 +2,7 @@
 set -eu
 
 server="${CODEX_SPLIT_SERVER:-https://codex-split.pages.dev}"
-collector_version="0.1.0"
+collector_version="0.2.0"
 install_dir="${HOME}/.local/bin"
 binary="${install_dir}/codex-split"
 
@@ -44,11 +44,43 @@ else
 fi
 [ "$expected" = "$actual" ] || { echo "Collector checksum did not match." >&2; exit 1; }
 
+# Stop the old service before replacing its binary or touching its checkpoint.
+if [ "$platform" = "linux" ]; then
+    systemctl --user stop codex-split.service 2>/dev/null || true
+else
+    launchctl bootout "gui/$(id -u)/dev.codex-split.collector" >/dev/null 2>&1 || true
+fi
 mkdir -p "$install_dir"
 chmod 755 "${temporary_dir}/codex-split"
 mv -f "${temporary_dir}/codex-split" "$binary"
 
 "$binary" setup --server "$server"
+launcher="${install_dir}/codex-split-launcher"
+cat > "$launcher" <<'LAUNCHER'
+#!/bin/sh
+binary="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/codex-split"
+child=""
+trap '[ -z "$child" ] || kill "$child" 2>/dev/null; exit 0' TERM INT
+while :; do
+    "$binary" stage-update || true
+    if [ -f "${binary}.next" ]; then
+        cp "$binary" "${binary}.previous"
+        mv -f "${binary}.next" "$binary"
+        if ! "$binary" version; then
+            mv -f "${binary}.previous" "$binary"
+        fi
+    fi
+    "$binary" tick &
+    child=$!
+    wait "$child" || true
+    child=""
+    sleep 60 &
+    child=$!
+    wait "$child" || true
+    child=""
+done
+LAUNCHER
+chmod 755 "$launcher"
 
 if [ "$platform" = "linux" ]; then
     command -v systemctl >/dev/null 2>&1 || {
@@ -57,13 +89,13 @@ if [ "$platform" = "linux" ]; then
     }
     service_dir="${HOME}/.config/systemd/user"
     mkdir -p "$service_dir"
-    sed "s|__BINARY__|${binary}|g" > "${service_dir}/codex-split.service" <<'EOF'
+    sed "s|__BINARY__|${launcher}|g" > "${service_dir}/codex-split.service" <<'EOF'
 [Unit]
 Description=Codex Split usage collector
 After=network-online.target
 
 [Service]
-ExecStart="__BINARY__" run
+ExecStart="__BINARY__"
 Restart=always
 RestartSec=5
 
@@ -76,7 +108,7 @@ else
     service_dir="${HOME}/Library/LaunchAgents"
     service_file="${service_dir}/dev.codex-split.collector.plist"
     mkdir -p "$service_dir"
-    sed "s|__BINARY__|${binary}|g; s|__HOME__|${HOME}|g" > "$service_file" <<'EOF'
+    sed "s|__BINARY__|${launcher}|g; s|__HOME__|${HOME}|g" > "$service_file" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -86,7 +118,6 @@ else
     <key>ProgramArguments</key>
     <array>
         <string>__BINARY__</string>
-        <string>run</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

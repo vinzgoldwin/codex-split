@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "assets": {
+    "linux/amd64": {
+      "file": "codex-split-linux-x86_64-0.2.0",
+      "sha256": "ca04c56434bc3d90ccc0b8ed33a0b4db12bc7cf45e8f156bb29a4ba3e01543de"
+    },
+    "linux/arm64": {
+      "file": "codex-split-linux-aarch64-0.2.0",
+      "sha256": "124f5efbf192862d8db8c529dec0bc871182fb9e4fa2d91f74231df1f824b4c9"
+    },
+    "darwin/amd64": {
+      "file": "codex-split-macos-x86_64-0.2.0",
+      "sha256": "1ffd45496d43d4976a58234cdb373970e19879d1c3a8785692cf30d9992931fe"
+    },
+    "darwin/arm64": {
+      "file": "codex-split-macos-aarch64-0.2.0",
+      "sha256": "204563e23e182109aa30223876879e6a4f1d29089d6dc04e1ac1814d23faac92"
+    },
+    "windows/amd64": {
+      "file": "codex-split-windows-x86_64-0.2.0.exe",
+      "sha256": "1a97d7f6722d0a55ca0f67361cc181981cc6b3f82f6a935c73fbea3d34535b86"
+    },
+    "windows/arm64": {
+      "file": "codex-split-windows-aarch64-0.2.0.exe",
+      "sha256": "a1b8b34876cb275a976c8d623dbdbf0d848199f70110c4cea40ef9715339f4bd"
+    }
+  }
+}

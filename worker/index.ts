@@ -1,6 +1,7 @@
 import { decrypt, encrypt, expiredSessionCookie, randomToken, secretMatches, sessionCookie, sessionMemberId, sha256 } from './crypto';
-import { estimateMicros } from './pricing';
-import type { DeviceRow, Env, MemberRow, QuotaInput, QuotaWindowRow, UsageInput } from './types';
+import { estimateMicros, PRICING_VERSION } from './pricing';
+import { contributions, summaryStatements, repriceBatch, DAY } from './batches';
+import type { DeviceRow, Env, MemberRow, QuotaInput, QuotaWindowRow, RequestUsage, UsageInput } from './types';
 
 class ApiError extends Error {
     constructor(
@@ -29,8 +30,21 @@ interface MemberWeightRow {
     member_id: number;
     cost: number;
     tokens: number;
+    weight: number;
     unknown_entries: number;
+    incomplete_entries: number;
 }
+
+interface MemberPeriodUsageRow {
+    member_id: number;
+    today_cost: number;
+    today_tokens: number;
+    thirty_day_cost: number;
+    thirty_day_tokens: number;
+    incomplete_entries: number;
+}
+
+const QUOTA_RESET_TOLERANCE_MS = 5 * 60 * 1000;
 
 function response(data: unknown, status = 200, headers?: HeadersInit): Response {
     const responseHeaders = new Headers(headers);
@@ -121,7 +135,7 @@ async function login(request: Request, env: Env): Promise<Response> {
 
 async function dashboard(request: Request, env: Env): Promise<Response> {
     const currentViewer = await viewer(request, env);
-    const window = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY reset_at DESC LIMIT 1').first<QuotaWindowRow>();
+    const window = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY sampled_at DESC LIMIT 1').first<QuotaWindowRow>();
     const activeMembers = await env.DB.prepare('SELECT id, name, active FROM members WHERE active = 1 ORDER BY name').all<MemberRow>();
 
     type MemberUsageRow = MemberRow & { allocation_percent: number; used: number };
@@ -141,24 +155,32 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
         `SELECT id, member_id, name, platform, last_seen_at
          FROM devices WHERE revoked_at IS NULL ORDER BY name`,
     ).all<DeviceRow>();
-    const cutoff = Date.now() - Number(env.RETENTION_DAYS || 30) * 24 * 60 * 60 * 1000;
-    const costs = await env.DB.prepare(
-        `SELECT member_id, SUM(estimated_cost_micros) AS micros
-         FROM usage_entries WHERE reported_at >= ? GROUP BY member_id`,
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const todayStart = Math.floor(now / dayMs) * dayMs;
+    const thirtyDayStart = todayStart - 29 * dayMs;
+    const periodUsage = await env.DB.prepare(
+        `SELECT member_id,
+                SUM(CASE WHEN day_start = ? THEN estimated_cost_micros ELSE 0 END) AS today_cost,
+                SUM(CASE WHEN day_start = ? THEN input_tokens + output_tokens ELSE 0 END) AS today_tokens,
+                SUM(estimated_cost_micros) AS thirty_day_cost,
+                SUM(input_tokens + output_tokens) AS thirty_day_tokens, SUM(incomplete_entries) AS incomplete_entries
+         FROM member_usage_days
+         WHERE day_start >= ?
+         GROUP BY member_id`,
     )
-        .bind(cutoff)
-        .all<{ member_id: number; micros: number }>();
+        .bind(todayStart, todayStart, thirtyDayStart)
+        .all<MemberPeriodUsageRow>();
     const windowUsage = window
         ? await env.DB.prepare(
               `SELECT member_id,
-                      SUM(estimated_cost_micros) AS cost,
-                      SUM(input_tokens + output_tokens) AS tokens,
-                      SUM(CASE WHEN estimated_cost_micros = 0 THEN 1 ELSE 0 END) AS unknown_entries
-               FROM usage_entries
-               WHERE reported_at BETWEEN ? AND ?
-               GROUP BY member_id`,
+                      estimated_cost_micros AS cost, usage_weight AS weight,
+                      input_tokens + output_tokens AS tokens,
+                      unknown_entries, incomplete_entries
+               FROM quota_window_members
+               WHERE quota_window_id = ?`,
           )
-              .bind(window.reset_at - window.duration_minutes * 60 * 1000, window.sampled_at)
+              .bind(window.id)
               .all<MemberWeightRow>()
         : { results: [] as MemberWeightRow[] };
 
@@ -168,38 +190,51 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
         if (!byId.has(member.id)) byId.set(member.id, { ...member, allocation_percent: 0, used: 0 });
     }
 
-    const costByMember = new Map(costs.results.map((row) => [row.member_id, row.micros]));
-    const totalCost = windowUsage.results.reduce((sum, row) => sum + row.cost, 0);
+    const periodUsageByMember = new Map(periodUsage.results.map((row) => [row.member_id, row]));
+    const windowUsageByMember = new Map(windowUsage.results.map((row) => [row.member_id, row]));
+    const totalCost = windowUsage.results.reduce((sum, row) => sum + row.weight, 0);
     const totalTokens = windowUsage.results.reduce((sum, row) => sum + row.tokens, 0);
     const useCost = totalCost > 0 && windowUsage.results.every((row) => row.unknown_entries === 0);
     const totalWeight = useCost ? totalCost : totalTokens;
-    const weightByMember = new Map(windowUsage.results.map((row) => [row.member_id, useCost ? row.cost : row.tokens]));
-    const usedBy = (memberId: number) => (window && totalWeight > 0 ? window.used_percent * ((weightByMember.get(memberId) || 0) / totalWeight) : 0);
+    const weightByMember = new Map(windowUsage.results.map((row) => [row.member_id, useCost ? row.weight : row.tokens]));
+    const attributableUsed = window ? Math.max(0, window.used_percent - window.baseline_used_percent) : 0;
+    const usedBy = (memberId: number) => (totalWeight > 0 ? attributableUsed * ((weightByMember.get(memberId) || 0) / totalWeight) : 0);
     const devicesByMember = new Map<number, DeviceRow[]>();
     for (const row of devices.results) {
         const memberDevices = devicesByMember.get(row.member_id) || [];
         memberDevices.push(row);
         devicesByMember.set(row.member_id, memberDevices);
     }
-    const now = Date.now();
     const members = [...byId.values()]
         .sort((left, right) => left.name.localeCompare(right.name))
-        .map((member) => ({
-            id: member.id,
-            name: member.name,
-            active: member.active === 1,
-            allocation: member.allocation_percent,
-            used: usedBy(member.id),
-            shareUsed: member.allocation_percent > 0 ? Math.min(999, (usedBy(member.id) / member.allocation_percent) * 100) : 0,
-            cost: (costByMember.get(member.id) || 0) / 1_000_000,
-            devices: (devicesByMember.get(member.id) || []).map((row) => ({
-                id: row.id,
-                name: row.name,
-                platform: row.platform,
-                lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
-                online: row.last_seen_at ? row.last_seen_at > now - 10 * 60 * 1000 : false,
-            })),
-        }));
+        .map((member) => {
+            const periods = periodUsageByMember.get(member.id);
+
+            return {
+                id: member.id,
+                name: member.name,
+                active: member.active === 1,
+                allocation: member.allocation_percent,
+                used: usedBy(member.id),
+                shareUsed: member.allocation_percent > 0 ? Math.min(999, (usedBy(member.id) / member.allocation_percent) * 100) : 0,
+                pricingIncomplete: (periods?.incomplete_entries || 0) > 0 || (windowUsageByMember.get(member.id)?.incomplete_entries || 0) > 0,
+                weeklyCost: (windowUsageByMember.get(member.id)?.cost || 0) / 1_000_000,
+                todayCost: (periods?.today_cost || 0) / 1_000_000,
+                todayTokens: periods?.today_tokens || 0,
+                thirtyDayCost: (periods?.thirty_day_cost || 0) / 1_000_000,
+                thirtyDayTokens: periods?.thirty_day_tokens || 0,
+                devices: (devicesByMember.get(member.id) || []).map((row) => ({
+                    id: row.id,
+                    name: row.name,
+                    platform: row.platform,
+                    lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
+                    online: row.last_seen_at
+                        ? row.last_seen_at >
+                          now - (Math.max(syncSettings(env).sync_interval_seconds, syncSettings(env).idle_interval_seconds) + 120) * 1000
+                        : false,
+                })),
+            };
+        });
 
     return response({
         viewer: { id: currentViewer.id, name: currentViewer.name },
@@ -208,7 +243,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
                   used: window.used_percent,
                   resetsAt: new Date(window.reset_at).toISOString(),
                   sampledAt: new Date(window.sampled_at).toISOString(),
-                  unattributed: totalWeight > 0 ? 0 : window.used_percent,
+                  unattributed: window.used_percent - (totalWeight > 0 ? attributableUsed : 0),
               }
             : null,
         members,
@@ -386,18 +421,24 @@ function quotaInput(value: unknown): QuotaInput | null {
     };
 }
 
-async function recordQuota(env: Env, quota: QuotaInput): Promise<void> {
+async function recordQuota(env: Env, quota: QuotaInput): Promise<QuotaWindowRow> {
     const resetAt = Date.parse(quota.resets_at);
     const sampledAt = Date.parse(quota.sampled_at);
-    let window = await env.DB.prepare('SELECT * FROM quota_windows WHERE reset_at = ?').bind(resetAt).first<QuotaWindowRow>();
+    let window = await env.DB.prepare(
+        `SELECT * FROM quota_windows
+         WHERE duration_minutes = ? AND reset_at BETWEEN ? AND ?
+         ORDER BY sampled_at DESC LIMIT 1`,
+    )
+        .bind(quota.window_duration_mins, resetAt - QUOTA_RESET_TOLERANCE_MS, resetAt + QUOTA_RESET_TOLERANCE_MS)
+        .first<QuotaWindowRow>();
 
     if (!window) {
         const inserted = await env.DB.prepare(
             `INSERT OR IGNORE INTO quota_windows
-             (reset_at, duration_minutes, used_percent, sampled_at, created_at)
-             VALUES (?, ?, ?, ?, ?) RETURNING *`,
+             (reset_at, duration_minutes, used_percent, baseline_used_percent, sampled_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
         )
-            .bind(resetAt, quota.window_duration_mins, quota.used_percent, sampledAt, Date.now())
+            .bind(resetAt, quota.window_duration_mins, quota.used_percent, quota.used_percent, sampledAt, Date.now())
             .first<QuotaWindowRow>();
         window = inserted || (await env.DB.prepare('SELECT * FROM quota_windows WHERE reset_at = ?').bind(resetAt).first<QuotaWindowRow>());
         if (!window) throw new Error('Could not create quota window.');
@@ -419,15 +460,97 @@ async function recordQuota(env: Env, quota: QuotaInput): Promise<void> {
         }
     }
 
-    if (sampledAt < window.sampled_at) return;
-    await env.DB.prepare('UPDATE quota_windows SET duration_minutes = ?, used_percent = ?, sampled_at = ? WHERE id = ? AND sampled_at <= ?')
-        .bind(quota.window_duration_mins, quota.used_percent, sampledAt, window.id, sampledAt)
-        .run();
+    if (sampledAt >= window.sampled_at) {
+        await env.DB.prepare('UPDATE quota_windows SET duration_minutes = ?, used_percent = ?, sampled_at = ? WHERE id = ? AND sampled_at <= ?')
+            .bind(quota.window_duration_mins, quota.used_percent, sampledAt, window.id, sampledAt)
+            .run();
+    }
+
+    return window;
+}
+
+function syncSettings(env: Env) {
+    const seconds = (value: string | undefined, fallback: number) => Math.max(60, Math.min(3600, Math.round(Number(value)) || fallback));
+    return {
+        ok: true,
+        sync_interval_seconds: seconds(env.SYNC_INTERVAL_SECONDS, 300),
+        idle_interval_seconds: seconds(env.IDLE_INTERVAL_SECONDS, 900),
+    };
+}
+
+async function syncRequests(env: Env, currentDevice: DeviceRow, data: Record<string, unknown>): Promise<Response> {
+    const sequence = numberField(data.sequence, 'sequence', 1, Number.MAX_SAFE_INTEGER, true);
+    const batchId = textField(data.batch_id, 'batch_id', 64) as string;
+    const version = textField(data.agent_version, 'agent_version', 40) as string;
+    if (!/^[0-9a-f-]{36}$/i.test(batchId)) throw new ApiError(422, 'batch_id is invalid.');
+    if (!Array.isArray(data.usage) || data.usage.length > 128) throw new ApiError(422, 'usage must contain at most 128 requests.');
+    const now = Date.now();
+    const usages: RequestUsage[] = data.usage.map((value) => {
+        const base = usageInput(value);
+        const row = value as Record<string, unknown>;
+        const cacheWrite = numberField(row.cache_write_input_tokens ?? 0, 'cache_write_input_tokens', 0, 1_000_000_000, true);
+        const reasoning = numberField(row.reasoning_output_tokens ?? 0, 'reasoning_output_tokens', 0, 1_000_000_000, true);
+        const at = timestamp(row.recorded_at, 'recorded_at');
+        if (at > now + 5 * 60_000) throw new ApiError(422, 'Usage timestamp is in the future.');
+        if (base.cached_input_tokens + cacheWrite > base.input_tokens || reasoning > base.output_tokens)
+            throw new ApiError(422, 'Usage token subsets exceed their totals.');
+        return {
+            ...base,
+            cache_write_input_tokens: cacheWrite,
+            reasoning_output_tokens: reasoning,
+            recorded_at: new Date(at).toISOString(),
+            service_tier: textField(row.service_tier, 'service_tier', 40) as string,
+        };
+    });
+    if (new Set(usages.map((u) => u.recorded_at.slice(0, 10))).size > 1) throw new ApiError(422, 'Each batch must cover one UTC day.');
+    const checkpoint = await env.DB.prepare('SELECT last_batch_sequence, last_batch_id FROM devices WHERE id = ?')
+        .bind(currentDevice.id)
+        .first<{ last_batch_sequence: number; last_batch_id: string | null }>();
+    if (checkpoint?.last_batch_sequence === sequence && checkpoint.last_batch_id === batchId) return response(syncSettings(env));
+    if (!checkpoint || checkpoint.last_batch_sequence !== sequence - 1)
+        throw new ApiError(409, 'Collector checkpoint does not match this device. Restore its state before syncing.');
+    const quota = quotaInput(data.quota);
+    if (quota) await recordQuota(env, quota);
+    const windows = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY sampled_at DESC LIMIT 16').all<QuotaWindowRow>();
+    const totals = contributions(usages, windows.results, now);
+    const guard = 'EXISTS (SELECT 1 FROM devices WHERE id = ? AND last_batch_sequence = ?)';
+    const guardArgs = [currentDevice.id, sequence - 1];
+    const statements = summaryStatements(env, currentDevice.member_id, totals, guard, guardArgs);
+    if (usages.length)
+        statements.push(
+            env.DB.prepare(
+                `INSERT INTO usage_batches
+        (device_id, member_id, batch_id, sequence, usage_json, contributions_json, pricing_version, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${guard}`,
+            ).bind(
+                currentDevice.id,
+                currentDevice.member_id,
+                batchId,
+                sequence,
+                JSON.stringify(usages),
+                JSON.stringify(totals),
+                PRICING_VERSION,
+                now,
+                ...guardArgs,
+            ),
+        );
+    statements.push(
+        env.DB.prepare(
+            `UPDATE devices SET last_batch_sequence = ?, last_batch_id = ?, last_seen_at = ?, agent_version = ?
+        WHERE id = ? AND last_batch_sequence = ?`,
+        ).bind(sequence, batchId, now, version, ...guardArgs),
+    );
+    statements.push(env.DB.prepare('SELECT last_batch_id FROM devices WHERE id = ?').bind(currentDevice.id));
+    const results = await env.DB.batch(statements);
+    if ((results.at(-1)?.results[0] as { last_batch_id?: string })?.last_batch_id !== batchId)
+        throw new ApiError(409, 'Another collector submitted this sequence.');
+    return response(syncSettings(env));
 }
 
 async function sync(request: Request, env: Env): Promise<Response> {
     const currentDevice = await device(request, env);
     const data = await body(request);
+    if (data.protocol === 2) return syncRequests(env, currentDevice, data);
     const batchId = textField(data.batch_id, 'batch_id', 64) as string;
     if (!/^[0-9a-f-]{36}$/i.test(batchId)) throw new ApiError(422, 'batch_id is invalid.');
     const reportedAt = timestamp(data.reported_at, 'reported_at');
@@ -435,6 +558,16 @@ async function sync(request: Request, env: Env): Promise<Response> {
     if (data.usage !== undefined && !Array.isArray(data.usage)) throw new ApiError(422, 'usage is invalid.');
     const usages = ((data.usage as unknown[] | undefined) || []).map(usageInput);
     if (usages.length > 30) throw new ApiError(422, 'usage has too many entries.');
+    const quota = quotaInput(data.quota);
+    const quotaWindow = quota
+        ? await recordQuota(env, quota)
+        : await env.DB.prepare(
+              `SELECT * FROM quota_windows
+               WHERE ? BETWEEN reset_at - duration_minutes * 60000 AND reset_at
+               ORDER BY sampled_at DESC LIMIT 1`,
+          )
+              .bind(reportedAt)
+              .first<QuotaWindowRow>();
     const now = Date.now();
     const statements = [
         env.DB.prepare('UPDATE devices SET last_seen_at = ?, agent_version = COALESCE(?, agent_version) WHERE id = ?').bind(
@@ -443,9 +576,66 @@ async function sync(request: Request, env: Env): Promise<Response> {
             currentDevice.id,
         ),
     ];
+    const recordedUsages = usages.filter((usage) => usage.input_tokens + usage.output_tokens > 0);
+    const totals = recordedUsages.reduce(
+        (sum, usage) => {
+            sum.input += usage.input_tokens;
+            sum.output += usage.output_tokens;
+            const cost = estimateMicros(usage);
+            sum.cost += cost;
+            if (cost === 0) sum.unknown += 1;
+            return sum;
+        },
+        { input: 0, output: 0, cost: 0, unknown: 0 },
+    );
 
-    for (const usage of usages) {
-        if (usage.input_tokens + usage.output_tokens === 0) continue;
+    if (recordedUsages.length) {
+        const dayStart = Math.floor(reportedAt / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
+        statements.push(
+            env.DB.prepare(
+                `INSERT INTO member_usage_days
+                     (member_id, day_start, estimated_cost_micros, input_tokens, output_tokens, unknown_entries, incomplete_entries)
+                 SELECT ?, ?, ?, ?, ?, ?, 1
+                 WHERE NOT EXISTS (SELECT 1 FROM usage_entries WHERE device_id = ? AND batch_id = ?)
+                 ON CONFLICT(member_id, day_start) DO UPDATE SET
+                     estimated_cost_micros = estimated_cost_micros + excluded.estimated_cost_micros,
+                     input_tokens = input_tokens + excluded.input_tokens,
+                     output_tokens = output_tokens + excluded.output_tokens,
+                     unknown_entries = unknown_entries + excluded.unknown_entries,
+                     incomplete_entries = incomplete_entries + 1`,
+            ).bind(currentDevice.member_id, dayStart, totals.cost, totals.input, totals.output, totals.unknown, currentDevice.id, batchId),
+        );
+
+        if (quotaWindow) {
+            statements.push(
+                env.DB.prepare(
+                    `INSERT INTO quota_window_members
+                         (quota_window_id, member_id, allocation_percent, estimated_cost_micros, usage_weight, input_tokens, output_tokens, unknown_entries, incomplete_entries)
+                     SELECT ?, ?, 0, ?, ?, ?, ?, ?, 1
+                     WHERE NOT EXISTS (SELECT 1 FROM usage_entries WHERE device_id = ? AND batch_id = ?)
+                     ON CONFLICT(quota_window_id, member_id) DO UPDATE SET
+                         estimated_cost_micros = estimated_cost_micros + excluded.estimated_cost_micros,
+                         usage_weight = usage_weight + excluded.estimated_cost_micros,
+                         input_tokens = input_tokens + excluded.input_tokens,
+                         output_tokens = output_tokens + excluded.output_tokens,
+                         unknown_entries = unknown_entries + excluded.unknown_entries,
+                     incomplete_entries = incomplete_entries + 1`,
+                ).bind(
+                    quotaWindow.id,
+                    currentDevice.member_id,
+                    totals.cost,
+                    totals.cost,
+                    totals.input,
+                    totals.output,
+                    totals.unknown,
+                    currentDevice.id,
+                    batchId,
+                ),
+            );
+        }
+    }
+
+    for (const usage of recordedUsages) {
         statements.push(
             env.DB.prepare(
                 `INSERT INTO usage_entries
@@ -468,17 +658,17 @@ async function sync(request: Request, env: Env): Promise<Response> {
         );
     }
     await env.DB.batch(statements);
-
-    const quota = quotaInput(data.quota);
-    if (quota) await recordQuota(env, quota);
     return response({ ok: true });
 }
 
 async function prune(env: Env): Promise<void> {
     const retention = Number(env.RETENTION_DAYS || 30) * 24 * 60 * 60 * 1000;
     const now = Date.now();
+    const cutoffDay = Math.floor((now - retention) / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
     await env.DB.batch([
+        env.DB.prepare('DELETE FROM usage_batches WHERE created_at < ?').bind(now - 7 * DAY),
         env.DB.prepare('DELETE FROM usage_entries WHERE reported_at < ?').bind(now - retention),
+        env.DB.prepare('DELETE FROM member_usage_days WHERE day_start < ?').bind(cutoffDay),
         env.DB.prepare('DELETE FROM quota_windows WHERE reset_at < ?').bind(now - retention),
         env.DB.prepare('DELETE FROM pairings WHERE expires_at < ?').bind(now - 24 * 60 * 60 * 1000),
     ]);
@@ -489,7 +679,11 @@ async function route(request: Request, env: Env): Promise<Response> {
     const path = url.pathname.replace(/\/+$/, '') || '/';
     const method = request.method;
 
-    if (method === 'GET' && path === '/api/health') return response({ ok: true });
+    if (method === 'POST' && path === '/api/reprice') {
+        await viewer(request, env);
+        return response({ repriced: await repriceBatch(env), pricing_version: PRICING_VERSION });
+    }
+    if (method === 'GET' && path === '/api/health') return response({ ok: true, usage_protocol: 2, pricing_version: PRICING_VERSION });
     if (method === 'GET' && path === '/api/login-options') return loginOptions(env);
     if (method === 'POST' && path === '/api/session') return login(request, env);
     if (method === 'DELETE' && path === '/api/session') return response({ ok: true }, 200, { 'Set-Cookie': expiredSessionCookie() });

@@ -3,10 +3,10 @@ set -eu
 
 project_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 output_dir="${project_dir}/public/downloads"
-collector_version="${COLLECTOR_VERSION:-0.1.0}"
+collector_version="${COLLECTOR_VERSION:-0.2.0}"
 
 mkdir -p "$output_dir"
-find "$output_dir" -maxdepth 1 -type f -name 'codex-split-*' -delete
+
 
 checksum() {
     checksum_dir="$(dirname -- "$1")"
@@ -38,3 +38,17 @@ build macos amd64 x86_64 ''
 build macos arm64 aarch64 ''
 build windows amd64 x86_64 .exe
 build windows arm64 aarch64 .exe
+
+node --input-type=module - "$output_dir" "$collector_version" <<'NODE'
+import {readFileSync, writeFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const [directory, version] = process.argv.slice(2);
+const assets = {};
+for (const [os, platform] of [['linux','linux'],['darwin','macos'],['windows','windows']]) {
+  for (const [arch, label] of [['amd64','x86_64'],['arm64','aarch64']]) {
+    const file = `codex-split-${platform}-${label}-${version}${os === 'windows' ? '.exe' : ''}`;
+    assets[`${os}/${arch}`] = {file, sha256:createHash('sha256').update(readFileSync(`${directory}/${file}`)).digest('hex')};
+  }
+}
+writeFileSync(`${directory}/latest.json`, JSON.stringify({version,assets},null,2)+'\n');
+NODE

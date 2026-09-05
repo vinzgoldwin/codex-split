@@ -3,3 +3,6 @@
 
 /install.ps1
     Content-Type: text/plain; charset=utf-8
+
+/downloads/latest.json
+    Cache-Control: no-cache
