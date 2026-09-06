@@ -13,6 +13,7 @@ export interface Member {
     allocation: number;
     used: number;
     shareUsed: number;
+    weeklyTokens: number | null;
     weeklyCost: number;
     todayCost: number;
     todayTokens: number;

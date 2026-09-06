@@ -301,7 +301,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                 </div>
                                 <div className="member-usage">
                                     <div className="usage-summary">
-                                        <span>{member.used.toFixed(2)}% account</span>
+                                        <span title="Estimated from activity during each quota increase">{member.used.toFixed(2)}% account</span>
                                         <small>{member.shareUsed.toFixed(0)}% share</small>
                                     </div>
                                     <div className="mini-meter">

@@ -1,6 +1,7 @@
 import { SELF } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
+import type { DashboardData } from '../src/types';
 
 async function request(path: string, init?: RequestInit) {
     return SELF.fetch(`https://split.test${path}`, init);
@@ -27,7 +28,7 @@ describe('Codex Split Worker', () => {
         expect(result.status).toBe(422);
     });
 
-    it('pairs a device once and attributes its quota movement', async () => {
+    it('pairs devices once and keeps recorded usage independent of account quota', async () => {
         const pairing = await request('/api/pairings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -115,30 +116,14 @@ describe('Codex Split Worker', () => {
 
         const dashboard = await request('/api/dashboard', { headers: { Cookie: cookie } });
         expect(dashboard.status).toBe(200);
-        const data = (await dashboard.json()) as {
-            account: { used: number; unattributed: number };
-            members: Array<{
-                id: number;
-                allocation: number;
-                used: number;
-                shareUsed: number;
-                weeklyCost: number;
-                todayCost: number;
-                todayTokens: number;
-                thirtyDayCost: number;
-                thirtyDayTokens: number;
-                devices: unknown[];
-            }>;
-        };
+        const data = (await dashboard.json()) as DashboardData;
         const kevin = data.members.find((member) => member.id === 1);
         const darius = data.members.find((member) => member.id === 2);
 
-        expect(data.account.used).toBe(46);
-        expect(data.account.unattributed).toBe(45);
-        expect(kevin).toMatchObject({ allocation: 33.333, used: 1 });
-        expect(kevin?.shareUsed).toBeCloseTo(3, 1);
+        expect(data.account?.used).toBe(46);
+        expect(kevin).toMatchObject({ allocation: 33.333, weeklyTokens: 1100 });
         expect(kevin?.devices).toHaveLength(1);
-        expect(darius).toMatchObject({ allocation: 33.333, used: 0, shareUsed: 0 });
+        expect(darius).toMatchObject({ allocation: 33.333, weeklyTokens: 0 });
         const rawCost = await env.DB.prepare('SELECT SUM(estimated_cost_micros) AS cost FROM usage_entries').first<{ cost: number }>();
         const rawTokens = await env.DB.prepare('SELECT SUM(input_tokens + output_tokens) AS tokens FROM usage_entries').first<{ tokens: number }>();
         const dailyCost = await env.DB.prepare('SELECT SUM(estimated_cost_micros) AS cost FROM member_usage_days').first<{ cost: number }>();
@@ -186,9 +171,9 @@ describe('Codex Split Worker', () => {
         });
 
         const balanced = await request('/api/dashboard', { headers: { Cookie: cookie } });
-        const balancedMembers = ((await balanced.json()) as { members: Array<{ id: number; used: number }> }).members;
-        expect(balancedMembers.find((member) => member.id === 1)?.used).toBe(0.5);
-        expect(balancedMembers.find((member) => member.id === 2)?.used).toBe(0.5);
+        const balancedMembers = ((await balanced.json()) as DashboardData).members;
+        expect(balancedMembers.find((member) => member.id === 1)?.weeklyTokens).toBe(1100);
+        expect(balancedMembers.find((member) => member.id === 2)?.weeklyTokens).toBe(1100);
     });
 
     it('rejects a device using the wrong ChatGPT account', async () => {

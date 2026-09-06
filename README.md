@@ -1,6 +1,6 @@
 # Codex Split
 
-Codex Split tracks one shared Codex account across a small team and any number of macOS, Linux, or Windows devices. The web app shows weekly usage, each member's equal share, connected devices, warnings, and a 30-day API-rate cost estimate.
+Codex Split tracks one shared Codex account across a small team and any number of macOS, Linux, or Windows devices. The web app shows weekly account and member usage percentages, connected devices, and API-rate cost estimates.
 
 The collector uploads token counters, model names, device status, and weekly quota metadata. It never uploads prompts, responses, repository paths, or OpenAI credentials.
 
@@ -96,7 +96,13 @@ Go cross-compiles the Linux, macOS, and Windows ARM64 and x86_64 binaries withou
 
 ## Attribution
 
-At each weekly reset, active members receive equal shares. Codex Split divides the shared account percentage using a relative usage weight for each member's activity in that weekly window. New collectors preserve request sizes, timestamps, model names, cache reads/writes, reasoning counters, and the service tier from explicit thread settings. Dollar estimates apply API rates, including long-context pricing and 2x Fast mode. Attribution uses the same token-rate proportions and long-context estimate, with the Codex Fast credit multiplier of 2.5x instead. These are relative estimates, not OpenAI's per-member billing ledger. The recorded tier is the requested setting; server-side downgrades may not be visible in local logs. If a model has no price mapping, it falls back to token counts. If there is no matching activity, the usage stays unattributed.
+Member percentages are saved estimates of account quota consumption. Each positive quota movement creates an interval from the previous increase to the new sample. After the longer collector sync interval plus two minutes (17 minutes by default), that increase is split only among members with recorded activity in that interval. Known models use relative usage weights; an unknown model uses token proportions for that interval. Finalized percentages never change when other members upload usage or pricing rules change. Activity before the initial quota sample is not assigned. Quota increases without matching activity remain unattributed, and reports arriving after finalization update token/cost totals without changing saved percentages. Pending increases also appear as unattributed until finalized.
+
+Both collector protocols are supported. Protocol 2 uses request timestamps; protocol 1 uses quota sample timestamps when available, otherwise upload timestamps, so delayed legacy uploads are less accurate. Dollar costs remain API-rate estimates, and token totals remain the counts reported by each member's paired devices. Cached input and reasoning are subsets of input and output respectively, not extra tokens. Daily summaries use UTC.
+
+Migration 0005 saves the old whole-window estimate once as the historical starting point and tracks intervals from deployment onward. Historical quota samples were not retained, so earlier attribution cannot be reconstructed exactly. Weekly resets start with zero member attribution and leave the first account reading unattributed.
+
+New collectors preserve request sizes, timestamps, model names, cache reads/writes, reasoning counters, and the requested service tier. Dollar estimates apply API rates, including long-context pricing and Fast mode. The recorded tier is the requested setting; server-side downgrades may not be visible in local logs. Unknown model prices produce an incomplete cost estimate without changing token counts. Older collectors report batch timestamps rather than request timestamps.
 
 Dollar values are estimates at published API token rates. They are not Codex subscription charges.
 

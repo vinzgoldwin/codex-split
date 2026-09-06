@@ -1,6 +1,7 @@
 import { decrypt, encrypt, expiredSessionCookie, randomToken, secretMatches, sessionCookie, sessionMemberId, sha256 } from './crypto';
 import { estimateMicros, PRICING_VERSION } from './pricing';
 import { contributions, summaryStatements, repriceBatch, DAY } from './batches';
+import { settleQuota } from './attribution';
 import type { DeviceRow, Env, MemberRow, QuotaInput, QuotaWindowRow, RequestUsage, UsageInput } from './types';
 
 class ApiError extends Error {
@@ -26,12 +27,10 @@ interface PairingRow {
     delivered_at: number | null;
 }
 
-interface MemberWeightRow {
+interface MemberWindowUsageRow {
     member_id: number;
     cost: number;
     tokens: number;
-    weight: number;
-    unknown_entries: number;
     incomplete_entries: number;
 }
 
@@ -135,13 +134,14 @@ async function login(request: Request, env: Env): Promise<Response> {
 
 async function dashboard(request: Request, env: Env): Promise<Response> {
     const currentViewer = await viewer(request, env);
+    await settleQuota(env);
     const window = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY sampled_at DESC LIMIT 1').first<QuotaWindowRow>();
     const activeMembers = await env.DB.prepare('SELECT id, name, active FROM members WHERE active = 1 ORDER BY name').all<MemberRow>();
 
-    type MemberUsageRow = MemberRow & { allocation_percent: number; used: number };
+    type MemberUsageRow = MemberRow & { allocation_percent: number; used_percent: number };
     const windowMembers = window
         ? await env.DB.prepare(
-              `SELECT m.id, m.name, m.active, qwm.allocation_percent, 0 AS used
+              `SELECT m.id, m.name, m.active, qwm.allocation_percent, qwm.used_percent
                FROM quota_window_members qwm
                JOIN members m ON m.id = qwm.member_id
                WHERE qwm.quota_window_id = ?
@@ -174,31 +174,24 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
     const windowUsage = window
         ? await env.DB.prepare(
               `SELECT member_id,
-                      estimated_cost_micros AS cost, usage_weight AS weight,
+                      estimated_cost_micros AS cost,
                       input_tokens + output_tokens AS tokens,
-                      unknown_entries, incomplete_entries
+                      incomplete_entries
                FROM quota_window_members
                WHERE quota_window_id = ?`,
           )
               .bind(window.id)
-              .all<MemberWeightRow>()
-        : { results: [] as MemberWeightRow[] };
+              .all<MemberWindowUsageRow>()
+        : { results: [] as MemberWindowUsageRow[] };
 
     const byId = new Map<number, MemberUsageRow>();
     for (const member of windowMembers.results) byId.set(member.id, member);
     for (const member of activeMembers.results) {
-        if (!byId.has(member.id)) byId.set(member.id, { ...member, allocation_percent: 0, used: 0 });
+        if (!byId.has(member.id)) byId.set(member.id, { ...member, allocation_percent: 0, used_percent: 0 });
     }
 
     const periodUsageByMember = new Map(periodUsage.results.map((row) => [row.member_id, row]));
     const windowUsageByMember = new Map(windowUsage.results.map((row) => [row.member_id, row]));
-    const totalCost = windowUsage.results.reduce((sum, row) => sum + row.weight, 0);
-    const totalTokens = windowUsage.results.reduce((sum, row) => sum + row.tokens, 0);
-    const useCost = totalCost > 0 && windowUsage.results.every((row) => row.unknown_entries === 0);
-    const totalWeight = useCost ? totalCost : totalTokens;
-    const weightByMember = new Map(windowUsage.results.map((row) => [row.member_id, useCost ? row.weight : row.tokens]));
-    const attributableUsed = window ? Math.max(0, window.used_percent - window.baseline_used_percent) : 0;
-    const usedBy = (memberId: number) => (totalWeight > 0 ? attributableUsed * ((weightByMember.get(memberId) || 0) / totalWeight) : 0);
     const devicesByMember = new Map<number, DeviceRow[]>();
     for (const row of devices.results) {
         const memberDevices = devicesByMember.get(row.member_id) || [];
@@ -215,10 +208,11 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
                 name: member.name,
                 active: member.active === 1,
                 allocation: member.allocation_percent,
-                used: usedBy(member.id),
-                shareUsed: member.allocation_percent > 0 ? Math.min(999, (usedBy(member.id) / member.allocation_percent) * 100) : 0,
+                used: member.used_percent,
+                shareUsed: member.allocation_percent > 0 ? (member.used_percent / member.allocation_percent) * 100 : 0,
                 pricingIncomplete: (periods?.incomplete_entries || 0) > 0 || (windowUsageByMember.get(member.id)?.incomplete_entries || 0) > 0,
                 weeklyCost: (windowUsageByMember.get(member.id)?.cost || 0) / 1_000_000,
+                weeklyTokens: window ? windowUsageByMember.get(member.id)?.tokens || 0 : null,
                 todayCost: (periods?.today_cost || 0) / 1_000_000,
                 todayTokens: periods?.today_tokens || 0,
                 thirtyDayCost: (periods?.thirty_day_cost || 0) / 1_000_000,
@@ -243,7 +237,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
                   used: window.used_percent,
                   resetsAt: new Date(window.reset_at).toISOString(),
                   sampledAt: new Date(window.sampled_at).toISOString(),
-                  unattributed: window.used_percent - (totalWeight > 0 ? attributableUsed : 0),
+                  unattributed: Math.max(0, window.used_percent - members.reduce((sum, member) => sum + member.used, 0)),
               }
             : null,
         members,
@@ -435,10 +429,10 @@ async function recordQuota(env: Env, quota: QuotaInput): Promise<QuotaWindowRow>
     if (!window) {
         const inserted = await env.DB.prepare(
             `INSERT OR IGNORE INTO quota_windows
-             (reset_at, duration_minutes, used_percent, baseline_used_percent, sampled_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
+             (reset_at, duration_minutes, used_percent, baseline_used_percent, sampled_at, created_at, attribution_sampled_at, attribution_used_percent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
         )
-            .bind(resetAt, quota.window_duration_mins, quota.used_percent, quota.used_percent, sampledAt, Date.now())
+            .bind(resetAt, quota.window_duration_mins, quota.used_percent, quota.used_percent, sampledAt, Date.now(), sampledAt, quota.used_percent)
             .first<QuotaWindowRow>();
         window = inserted || (await env.DB.prepare('SELECT * FROM quota_windows WHERE reset_at = ?').bind(resetAt).first<QuotaWindowRow>());
         if (!window) throw new Error('Could not create quota window.');
@@ -460,11 +454,32 @@ async function recordQuota(env: Env, quota: QuotaInput): Promise<QuotaWindowRow>
         }
     }
 
-    if (sampledAt >= window.sampled_at) {
-        await env.DB.prepare('UPDATE quota_windows SET duration_minutes = ?, used_percent = ?, sampled_at = ? WHERE id = ? AND sampled_at <= ?')
-            .bind(quota.window_duration_mins, quota.used_percent, sampledAt, window.id, sampledAt)
-            .run();
-    }
+    const settings = syncSettings(env);
+    const settleAfter = Date.now() + (Math.max(settings.sync_interval_seconds, settings.idle_interval_seconds) + 120) * 1000;
+    await env.DB.batch([
+        env.DB.prepare(
+            `INSERT INTO quota_intervals (quota_window_id, starts_at, ends_at, used_percent, settle_after)
+             SELECT id, attribution_sampled_at, ?, ? - attribution_used_percent, ? FROM quota_windows
+             WHERE id = ? AND sampled_at <= ? AND attribution_sampled_at < ? AND attribution_used_percent < ?`,
+        ).bind(sampledAt, quota.used_percent, settleAfter, window.id, sampledAt, sampledAt, quota.used_percent),
+        env.DB.prepare(
+            `UPDATE quota_windows SET
+             attribution_sampled_at = CASE WHEN ? > attribution_used_percent AND ? > attribution_sampled_at THEN ? ELSE attribution_sampled_at END,
+             attribution_used_percent = MAX(attribution_used_percent, ?),
+             duration_minutes = ?, used_percent = ?, sampled_at = ?
+             WHERE id = ? AND sampled_at <= ?`,
+        ).bind(
+            quota.used_percent,
+            sampledAt,
+            sampledAt,
+            quota.used_percent,
+            quota.window_duration_mins,
+            quota.used_percent,
+            sampledAt,
+            window.id,
+            sampledAt,
+        ),
+    ]);
 
     return window;
 }
@@ -544,6 +559,7 @@ async function syncRequests(env: Env, currentDevice: DeviceRow, data: Record<str
     const results = await env.DB.batch(statements);
     if ((results.at(-1)?.results[0] as { last_batch_id?: string })?.last_batch_id !== batchId)
         throw new ApiError(409, 'Another collector submitted this sequence.');
+    await settleQuota(env);
     return response(syncSettings(env));
 }
 
@@ -559,6 +575,8 @@ async function sync(request: Request, env: Env): Promise<Response> {
     const usages = ((data.usage as unknown[] | undefined) || []).map(usageInput);
     if (usages.length > 30) throw new ApiError(422, 'usage has too many entries.');
     const quota = quotaInput(data.quota);
+    // Legacy counters were collected before the quota read, not after it was uploaded.
+    const activityAt = quota ? Date.parse(quota.sampled_at) : reportedAt;
     const quotaWindow = quota
         ? await recordQuota(env, quota)
         : await env.DB.prepare(
@@ -590,7 +608,7 @@ async function sync(request: Request, env: Env): Promise<Response> {
     );
 
     if (recordedUsages.length) {
-        const dayStart = Math.floor(reportedAt / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
+        const dayStart = Math.floor(activityAt / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
         statements.push(
             env.DB.prepare(
                 `INSERT INTO member_usage_days
@@ -652,12 +670,13 @@ async function sync(request: Request, env: Env): Promise<Response> {
                 usage.cached_input_tokens,
                 usage.output_tokens,
                 estimateMicros(usage),
-                reportedAt,
+                activityAt,
                 now,
             ),
         );
     }
     await env.DB.batch(statements);
+    await settleQuota(env);
     return response({ ok: true });
 }
 
@@ -666,7 +685,10 @@ async function prune(env: Env): Promise<void> {
     const now = Date.now();
     const cutoffDay = Math.floor((now - retention) / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
     await env.DB.batch([
-        env.DB.prepare('DELETE FROM usage_batches WHERE created_at < ?').bind(now - 7 * DAY),
+        env.DB.prepare(
+            `DELETE FROM usage_batches WHERE created_at < ?
+             AND created_at < COALESCE((SELECT MIN(starts_at) - 300000 FROM quota_intervals WHERE finalized_at IS NULL), ?)`,
+        ).bind(now - 7 * DAY, now),
         env.DB.prepare('DELETE FROM usage_entries WHERE reported_at < ?').bind(now - retention),
         env.DB.prepare('DELETE FROM member_usage_days WHERE day_start < ?').bind(cutoffDay),
         env.DB.prepare('DELETE FROM quota_windows WHERE reset_at < ?').bind(now - retention),
@@ -716,6 +738,7 @@ export default {
         }
     },
     async scheduled(_controller, env): Promise<void> {
+        await settleQuota(env);
         await prune(env);
     },
 } satisfies ExportedHandler<Env>;
