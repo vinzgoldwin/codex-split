@@ -2,11 +2,11 @@ import { SELF } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { expect, it } from 'vitest';
 import { sha256 } from '../worker/crypto';
-import { settleQuota } from '../worker/attribution';
 import { recordQuota } from '../worker/index';
 import { DAY } from '../worker/batches';
+import type { DashboardData } from '../src/types';
 
-it('attributes legacy uploads once and leaves an idle legacy member unchanged', async () => {
+it('counts legacy uploads once while keeping account quota unattributed', async () => {
     const now = Date.now();
     const token = crypto.randomUUID();
     await env.DB.prepare('INSERT INTO devices (id, member_id, token_hash, name, platform, created_at) VALUES (?, 1, ?, ?, ?, ?)')
@@ -34,11 +34,29 @@ it('attributes legacy uploads once and leaves an idle legacy member unchanged', 
         });
         expect(result.status).toBe(200);
     }
-    await settleQuota(env, now + DAY);
     const used = () =>
-        env.DB.prepare('SELECT used_percent FROM quota_window_members WHERE quota_window_id = ? AND member_id = 1').bind(window.id).first();
-    expect(await used()).toEqual({ used_percent: 2 });
+        env.DB.prepare(
+            `SELECT used_percent, input_tokens, output_tokens, estimated_cost_micros
+             FROM quota_window_members WHERE quota_window_id = ? AND member_id = 1`,
+        )
+            .bind(window.id)
+            .first();
+    const expected = { used_percent: 0, input_tokens: 1000, output_tokens: 100, estimated_cost_micros: 6000 };
+    expect(await used()).toEqual(expected);
     await recordQuota(env, quota(14, 3000));
-    await settleQuota(env, now + DAY);
-    expect(await used()).toEqual({ used_percent: 2 });
+    expect(await used()).toEqual(expected);
+
+    const login = await SELF.fetch('https://split.test/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memberId: 1, password: 'Akashi' }),
+    });
+    expect(login.status).toBe(200);
+    const result = await SELF.fetch('https://split.test/api/dashboard', {
+        headers: { Cookie: login.headers.get('Set-Cookie')!.split(';')[0] },
+    });
+    expect(result.status).toBe(200);
+    const data = (await result.json()) as DashboardData;
+    expect(data.account).toMatchObject({ used: 14, unattributed: 14 });
+    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 0, shareUsed: 0, weeklyTokens: 1100, weeklyCost: 0.006 });
 });

@@ -55,11 +55,12 @@ it('counts only each member’s recorded tokens across quota changes, other memb
     const before = (await dashboard()).members.find((member) => member.id === 1)!;
     expect(before).toMatchObject({ weeklyTokens: 1200, todayTokens: 0, thirtyDayTokens: 1200 });
     expect(before).toMatchObject({ used: 0, shareUsed: 0 });
+    expect((await dashboard()).account).toMatchObject({ used: 44, unattributed: 44 });
 
     // Account quota can move with no uploaded activity. It must not manufacture member usage.
     await send(tokens[0], { sequence: 2, usage: [], quota: quota(87, now + 1000) });
     let data = await dashboard();
-    expect(data.account?.used).toBe(87);
+    expect(data.account).toMatchObject({ used: 87, unattributed: 87 });
     expect(data.members.find((member) => member.id === 1)).toMatchObject({
         weeklyTokens: before.weeklyTokens,
         weeklyCost: before.weeklyCost,
@@ -71,6 +72,8 @@ it('counts only each member’s recorded tokens across quota changes, other memb
     data = await dashboard();
     expect(data.members.find((member) => member.id === 1)?.weeklyTokens).toBe(1200);
     expect(data.members.find((member) => member.id === 2)?.weeklyTokens).toBe(1200);
+    expect(data.account).toMatchObject({ used: 88, unattributed: 88 });
+    expect(data.members.every((member) => member.used === 0 && member.shareUsed === 0)).toBe(true);
 
     const delayed = { sequence: 3, batch_id: crypto.randomUUID(), usage: [usage] };
     await send(tokens[0], delayed);
@@ -81,4 +84,10 @@ it('counts only each member’s recorded tokens across quota changes, other memb
     expect(data.account?.used).toBe(88);
     expect(data.members.find((member) => member.id === 1)).toMatchObject({ weeklyTokens: 3600, todayTokens: 0, thirtyDayTokens: 3600 });
     expect(data.members.find((member) => member.id === 2)?.weeklyTokens).toBe(1200);
+
+    // Previously saved estimates must not reappear, even before the data migration runs.
+    await env.DB.prepare('UPDATE quota_window_members SET used_percent = 20 WHERE member_id = 1').run();
+    data = await dashboard();
+    expect(data.account).toMatchObject({ used: 88, unattributed: 88 });
+    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 0, shareUsed: 0, weeklyTokens: 3600 });
 });

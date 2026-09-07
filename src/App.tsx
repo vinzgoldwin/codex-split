@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { api, ApiRequestError } from './api';
 import { DeviceVersion } from './DeviceVersion';
 import type { DashboardData, MemberOption } from './types';
@@ -150,11 +150,10 @@ function PairDevice({ code, onDone }: { code: string; onDone: () => void }) {
 }
 
 function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: () => Promise<void>; onLogout: () => void }) {
-    const { viewer, account, members, warningPercent } = data;
+    const { viewer, account, members } = data;
     const [notice, setNotice] = useState('');
     const [memberName, setMemberName] = useState('');
     const [error, setError] = useState('');
-    const alerts = useMemo(() => members.filter((member) => member.shareUsed >= warningPercent), [members, warningPercent]);
     const weeklyShare = members.find((member) => member.allocation > 0)?.allocation;
     const installCommand = /Windows/i.test(navigator.userAgent)
         ? `irm ${window.location.origin}/install.ps1 | iex`
@@ -209,12 +208,6 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
             {error && (
                 <div className="notice error" role="alert">
                     {error}
-                </div>
-            )}
-            {alerts.length > 0 && (
-                <div className="notice warning">
-                    <strong>Usage warning</strong>
-                    {alerts.map((member) => `${member.name} has used ${member.shareUsed.toFixed(0)}% of their weekly share.`).join(' ')}
                 </div>
             )}
 
@@ -286,7 +279,6 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                 <div className="member-name">
                                     <strong>{member.name}</strong>
                                     {!member.active && <span className="inactive-mark">Inactive</span>}
-                                    {member.shareUsed >= warningPercent && <span className="alert-mark">Almost out</span>}
                                     {member.active && member.id !== viewer.id && (
                                         <button
                                             className="text-button member-action"
@@ -302,14 +294,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                 </div>
                                 <div className="member-usage">
                                     <div className="usage-summary">
-                                        <span title="Estimated from activity during each quota increase">{member.used.toFixed(2)}% account</span>
-                                        <small>{member.shareUsed.toFixed(0)}% share</small>
-                                    </div>
-                                    <div className="mini-meter">
-                                        <span
-                                            className={member.shareUsed >= warningPercent ? 'danger' : ''}
-                                            style={{ width: `${Math.min(member.shareUsed, 100)}%` }}
-                                        />
+                                        <span title="Account quota cannot be assigned to individual devices">Not attributed</span>
                                     </div>
                                 </div>
                                 <div className="member-devices">

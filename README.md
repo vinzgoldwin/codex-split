@@ -60,7 +60,11 @@ The migration creates `Kevin`, `Darius`, and `Albert`. The example local tracker
 
 The public app runs at `https://codex-split.pages.dev`. The Worker has no public route and only runs the cleanup schedule.
 
-Member changes affect the equal allowance at the next weekly reset. Change `TRACKER_WARNING_PERCENT` or `RETENTION_DAYS` in `wrangler.jsonc` if needed.
+Pushes to `main` run the web checks and agent tests, then apply D1 migrations and deploy both the scheduled Worker and Pages app. Pull requests and pushes to `develop` only run checks. Deployments run one at a time.
+
+For automatic deployment, add a `CLOUDFLARE_API_TOKEN` repository secret in GitHub Settings > Secrets and variables > Actions. The token needs Cloudflare Pages Edit, Workers Scripts Edit, and D1 Edit permissions for the account configured in `.github/workflows/tests.yml`. The workflow uses the existing project and its saved application secrets. Device binaries are deployed as checked-in assets and are not rebuilt by the workflow.
+
+Member changes update the equal allowance immediately. This allowance is not a measurement of quota consumed. Change `RETENTION_DAYS` in `wrangler.jsonc` to adjust data retention.
 
 ## Register a device
 
@@ -96,11 +100,11 @@ Go cross-compiles the Linux, macOS, and Windows ARM64 and x86_64 binaries withou
 
 ## Attribution
 
-Member percentages are saved estimates of account quota consumption. Each positive quota movement creates an interval from the previous increase to the new sample. After the longer collector sync interval plus two minutes (17 minutes by default), that increase is split only among members with recorded activity in that interval. Known models use relative usage weights; an unknown model uses token proportions for that interval. Finalized percentages never change when other members upload usage or pricing rules change. Activity before the initial quota sample is not assigned. Quota increases without matching activity remain unattributed, and reports arriving after finalization update token/cost totals without changing saved percentages. Pending increases also appear as unattributed until finalized.
+All account quota remains unattributed. Collectors report account-wide quota and their own token usage, but no per-device quota consumption. The server does not distribute account quota increases among members, even when they report activity at the same time. The dashboard shows member quota as "Not attributed" and tracks each member's recorded tokens and estimated API costs separately. Account-wide usage from an untracked device cannot inflate another member's quota share.
 
 Both collector protocols are supported. Protocol 2 uses request timestamps; protocol 1 uses quota sample timestamps when available, otherwise upload timestamps, so delayed legacy uploads are less accurate. Dollar costs remain API-rate estimates, and token totals remain the counts reported by each member's paired devices. Cached input and reasoning are subsets of input and output respectively, not extra tokens. Daily summaries use UTC.
 
-Migration 0005 saves the old whole-window estimate once as the historical starting point and tracks intervals from deployment onward. Historical quota samples were not retained, so earlier attribution cannot be reconstructed exactly. Weekly resets start with zero member attribution and leave the first account reading unattributed.
+Migration 0006 clears the current window's unsupported member percentages and retires pending estimates without changing token or cost totals. Older saved estimates remain in the database for history but are not displayed or used. The old interval tables and columns remain for deployment compatibility. Both collector protocols continue working without a binary update. The dashboard API keeps `used` and `shareUsed` at zero for already-open clients; these fields mean no quota has been assigned, not that a member did no work.
 
 New collectors preserve request sizes, timestamps, model names, cache reads/writes, reasoning counters, and the requested service tier. Dollar estimates apply API rates, including long-context pricing and Fast mode. The recorded tier is the requested setting; server-side downgrades may not be visible in local logs. Unknown model prices produce an incomplete cost estimate without changing token counts. Older collectors report batch timestamps rather than request timestamps.
 
