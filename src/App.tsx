@@ -269,7 +269,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                 <div className="member-table" role="table" aria-label="Member usage">
                     <div className="table-row table-header" role="row">
                         <span>Member</span>
-                        <span>Usage</span>
+                        <span>Weekly tokens</span>
                         <span>Devices</span>
                         <span>Weekly cost</span>
                     </div>
@@ -294,7 +294,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                 </div>
                                 <div className="member-usage">
                                     <div className="usage-summary">
-                                        <span title="Account quota cannot be assigned to individual devices">Not attributed</span>
+                                        <span>{member.weeklyTokens?.toLocaleString('en') ?? 'Not available'}</span>
                                     </div>
                                 </div>
                                 <div className="member-devices">
@@ -350,12 +350,9 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                         </div>
                     ))}
                 </div>
-                {account && account.unattributed > 0.001 && (
-                    <div className="unattributed-summary">
-                        <strong>Unattributed usage</strong>
-                        <span>{account.unattributed.toFixed(2)}% account, not linked to a member</span>
-                    </div>
-                )}
+                <div className="unattributed-summary">
+                    <span>Member totals come from paired devices. Account quota includes all devices.</span>
+                </div>
             </section>
         </main>
     );

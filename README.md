@@ -100,7 +100,9 @@ Go cross-compiles the Linux, macOS, and Windows ARM64 and x86_64 binaries withou
 
 ## Attribution
 
-All account quota remains unattributed. Collectors report account-wide quota and their own token usage, but no per-device quota consumption. The server does not distribute account quota increases among members, even when they report activity at the same time. The dashboard shows member quota as "Not attributed" and tracks each member's recorded tokens and estimated API costs separately. Account-wide usage from an untracked device cannot inflate another member's quota share.
+The dashboard shows each member's recorded weekly tokens and estimated API costs alongside the account-wide quota percentage. Member totals come only from their paired devices. Activity on an untracked device can increase the account total but does not increase a member's recorded tokens or costs.
+
+Collectors do not report per-device quota consumption. The server therefore does not distribute account quota increases among members or claim that the entire account total is unknown-device usage. Token totals are not converted into quota percentages, since different models, caching, and service tiers can consume quota differently. The amount consumed by untracked devices cannot be measured from the current reports.
 
 Both collector protocols are supported. Protocol 2 uses request timestamps; protocol 1 uses quota sample timestamps when available, otherwise upload timestamps, so delayed legacy uploads are less accurate. Dollar costs remain API-rate estimates, and token totals remain the counts reported by each member's paired devices. Cached input and reasoning are subsets of input and output respectively, not extra tokens. Daily summaries use UTC.
 
