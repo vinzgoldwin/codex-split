@@ -269,7 +269,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                 <div className="member-table" role="table" aria-label="Member usage">
                     <div className="table-row table-header" role="row">
                         <span>Member</span>
-                        <span>Weekly tokens</span>
+                        <span>Estimated usage</span>
                         <span>Devices</span>
                         <span>Weekly cost</span>
                     </div>
@@ -294,7 +294,24 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                 </div>
                                 <div className="member-usage">
                                     <div className="usage-summary">
-                                        <span>{member.weeklyTokens?.toLocaleString('en') ?? 'Not available'}</span>
+                                        <span
+                                            title={
+                                                member.estimateIncomplete
+                                                    ? 'Partial estimate: some reports have missing model or service tier details.'
+                                                    : 'Estimated from this member’s recorded usage using a fixed conversion.'
+                                            }
+                                        >
+                                            {account ? `~${member.used.toFixed(2)}% account` : 'Not available'}
+                                        </span>
+                                        {account && <small>~{member.shareUsed.toFixed(0)}% share</small>}
+                                    </div>
+                                    <div className="usage-summary">
+                                        <small>
+                                            {member.weeklyTokens === null
+                                                ? 'No weekly report'
+                                                : `${tokenFormatter.format(member.weeklyTokens)} tokens`}
+                                            {member.estimateIncomplete && ' · partial estimate'}
+                                        </small>
                                     </div>
                                 </div>
                                 <div className="member-devices">
@@ -350,9 +367,16 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                         </div>
                     ))}
                 </div>
-                <div className="unattributed-summary">
-                    <span>Member totals come from paired devices. Account quota includes all devices.</span>
-                </div>
+                {account && (
+                    <div className="unattributed-summary" title="The remainder includes unreported activity and estimation error.">
+                        <strong>{account.estimateExcess > 0 ? 'Estimate difference' : 'Unattributed estimate'}</strong>
+                        <span>
+                            {account.estimateExcess > 0
+                                ? `Member estimates exceed the account reading by ${account.estimateExcess.toFixed(2)} percentage points.`
+                                : `~${account.unattributed.toFixed(2)}% account`}
+                        </span>
+                    </div>
+                )}
             </section>
         </main>
     );

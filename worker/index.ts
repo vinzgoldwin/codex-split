@@ -29,6 +29,7 @@ interface PairingRow {
 interface MemberWindowUsageRow {
     member_id: number;
     cost: number;
+    weight: number;
     tokens: number;
     incomplete_entries: number;
 }
@@ -133,6 +134,8 @@ async function login(request: Request, env: Env): Promise<Response> {
 
 async function dashboard(request: Request, env: Env): Promise<Response> {
     const currentViewer = await viewer(request, env);
+    const weightPerPercent = Number(env.QUOTA_WEIGHT_PER_PERCENT);
+    if (!Number.isFinite(weightPerPercent) || weightPerPercent <= 0) throw new Error('QUOTA_WEIGHT_PER_PERCENT must be a positive number.');
     const window = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY sampled_at DESC LIMIT 1').first<QuotaWindowRow>();
     const activeMembers = await env.DB.prepare('SELECT id, name, active FROM members WHERE active = 1 ORDER BY name').all<MemberRow>();
     const activeShare = activeMembers.results.length ? Math.round((100 / activeMembers.results.length) * 1000) / 1000 : 0;
@@ -173,6 +176,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
         ? await env.DB.prepare(
               `SELECT member_id,
                       estimated_cost_micros AS cost,
+                      usage_weight AS weight,
                       input_tokens + output_tokens AS tokens,
                       incomplete_entries
                FROM quota_window_members
@@ -200,19 +204,22 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
         .sort((left, right) => left.name.localeCompare(right.name))
         .map((member) => {
             const periods = periodUsageByMember.get(member.id);
+            const weekly = windowUsageByMember.get(member.id);
             const allocation = member.active === 1 ? activeShare : 0;
+            // Fixed calibration: account movements and other members never rescale this estimate.
+            const used = (weekly?.weight || 0) / weightPerPercent;
 
             return {
                 id: member.id,
                 name: member.name,
                 active: member.active === 1,
                 allocation,
-                // Keep numeric fields for already-open dashboards. No account quota is assigned to a member.
-                used: 0,
-                shareUsed: 0,
+                used,
+                shareUsed: allocation > 0 ? (used / allocation) * 100 : 0,
+                estimateIncomplete: (weekly?.incomplete_entries || 0) > 0,
                 pricingIncomplete: (periods?.incomplete_entries || 0) > 0 || (windowUsageByMember.get(member.id)?.incomplete_entries || 0) > 0,
-                weeklyCost: (windowUsageByMember.get(member.id)?.cost || 0) / 1_000_000,
-                weeklyTokens: window ? windowUsageByMember.get(member.id)?.tokens || 0 : null,
+                weeklyCost: (weekly?.cost || 0) / 1_000_000,
+                weeklyTokens: window ? weekly?.tokens || 0 : null,
                 todayCost: (periods?.today_cost || 0) / 1_000_000,
                 todayTokens: periods?.today_tokens || 0,
                 thirtyDayCost: (periods?.thirty_day_cost || 0) / 1_000_000,
@@ -231,6 +238,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
             };
         });
 
+    const estimatedTotal = members.reduce((sum, member) => sum + member.used, 0);
     return response({
         viewer: { id: currentViewer.id, name: currentViewer.name },
         account: window
@@ -238,7 +246,8 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
                   used: window.used_percent,
                   resetsAt: new Date(window.reset_at).toISOString(),
                   sampledAt: new Date(window.sampled_at).toISOString(),
-                  unattributed: window.used_percent,
+                  unattributed: Math.max(0, window.used_percent - estimatedTotal),
+                  estimateExcess: Math.max(0, estimatedTotal - window.used_percent),
               }
             : null,
         members,

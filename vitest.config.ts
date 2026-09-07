@@ -13,6 +13,7 @@ export default defineConfig(async () => {
                         TRACKER_PASSWORD: 'Akashi',
                         AUTH_SECRET: 'test-secret-that-is-long-enough',
                         CHATGPT_ACCOUNT_EMAIL: 'shared-account@example.com',
+                        QUOTA_WEIGHT_PER_PERCENT: '10000',
                         TEST_MIGRATIONS: migrations,
                     },
                 },

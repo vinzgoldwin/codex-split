@@ -3,9 +3,10 @@ import { env } from 'cloudflare:workers';
 import { expect, it } from 'vitest';
 import { sha256 } from '../worker/crypto';
 import { DAY } from '../worker/batches';
+import { recordQuota } from '../worker/index';
 import type { DashboardData } from '../src/types';
 
-it('counts only each member’s recorded tokens across quota changes, other members, delayed uploads and retries', async () => {
+it('keeps member estimates independent of account movements, other members, delayed uploads and retries', async () => {
     const now = Date.now();
     const login = await SELF.fetch('https://split.test/api/session', {
         method: 'POST',
@@ -54,17 +55,20 @@ it('counts only each member’s recorded tokens across quota changes, other memb
     await send(tokens[0], { sequence: 1, usage: [usage], quota: quota(44) });
     const before = (await dashboard()).members.find((member) => member.id === 1)!;
     expect(before).toMatchObject({ weeklyTokens: 1200, todayTokens: 0, thirtyDayTokens: 1200 });
-    expect(before).toMatchObject({ used: 0, shareUsed: 0 });
-    expect((await dashboard()).account).toMatchObject({ used: 44, unattributed: 44 });
+    expect(before).toMatchObject({ used: 0.62, estimateIncomplete: false });
+    expect(before.shareUsed).toBeCloseTo((0.62 / before.allocation) * 100);
+    expect((await dashboard()).account).toMatchObject({ used: 44, unattributed: 43.38, estimateExcess: 0 });
 
     // Account quota can move with no uploaded activity. It must not manufacture member usage.
     await send(tokens[0], { sequence: 2, usage: [], quota: quota(87, now + 1000) });
     let data = await dashboard();
-    expect(data.account).toMatchObject({ used: 87, unattributed: 87 });
+    expect(data.account).toMatchObject({ used: 87, unattributed: 86.38, estimateExcess: 0 });
     expect(data.members.find((member) => member.id === 1)).toMatchObject({
         weeklyTokens: before.weeklyTokens,
         weeklyCost: before.weeklyCost,
         todayTokens: before.todayTokens,
+        used: before.used,
+        shareUsed: before.shareUsed,
     });
 
     // An unknown model on another member must not switch or rescale anyone else's totals.
@@ -72,8 +76,9 @@ it('counts only each member’s recorded tokens across quota changes, other memb
     data = await dashboard();
     expect(data.members.find((member) => member.id === 1)?.weeklyTokens).toBe(1200);
     expect(data.members.find((member) => member.id === 2)?.weeklyTokens).toBe(1200);
-    expect(data.account).toMatchObject({ used: 88, unattributed: 88 });
-    expect(data.members.every((member) => member.used === 0 && member.shareUsed === 0)).toBe(true);
+    expect(data.account).toMatchObject({ used: 88, unattributed: 87.38 });
+    expect(data.members.find((member) => member.id === 1)?.used).toBe(0.62);
+    expect(data.members.find((member) => member.id === 2)).toMatchObject({ used: 0, estimateIncomplete: true });
 
     const delayed = { sequence: 3, batch_id: crypto.randomUUID(), usage: [usage] };
     await send(tokens[0], delayed);
@@ -82,12 +87,31 @@ it('counts only each member’s recorded tokens across quota changes, other memb
     await send(tokens[0], { sequence: 4, usage: [], quota: quota(10, now - 1000) });
     data = await dashboard();
     expect(data.account?.used).toBe(88);
-    expect(data.members.find((member) => member.id === 1)).toMatchObject({ weeklyTokens: 3600, todayTokens: 0, thirtyDayTokens: 3600 });
+    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 1.86, weeklyTokens: 3600, todayTokens: 0, thirtyDayTokens: 3600 });
     expect(data.members.find((member) => member.id === 2)?.weeklyTokens).toBe(1200);
 
-    // Previously saved estimates must not reappear, even before the data migration runs.
+    // The retired allocation column must never affect the new estimate.
     await env.DB.prepare('UPDATE quota_window_members SET used_percent = 20 WHERE member_id = 1').run();
     data = await dashboard();
-    expect(data.account).toMatchObject({ used: 88, unattributed: 88 });
-    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 0, shareUsed: 0, weeklyTokens: 3600 });
+    expect(data.account).toMatchObject({ used: 88, unattributed: 86.14 });
+    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 1.86, weeklyTokens: 3600 });
+
+    // Another member's Fast activity increases only their estimate, with the fixed tier multiplier.
+    await send(tokens[1], { sequence: 2, usage: [{ ...usage, service_tier: 'priority' }], quota: quota(89, now + 3000) });
+    data = await dashboard();
+    expect(data.members.find((member) => member.id === 1)?.used).toBe(1.86);
+    expect(data.members.find((member) => member.id === 2)?.used).toBe(1.55);
+
+    // Quota corrections or estimation error must not cap or redistribute member estimates.
+    await send(tokens[0], { sequence: 5, usage: [], quota: quota(1, now + 4000) });
+    data = await dashboard();
+    expect(data.account).toMatchObject({ used: 1, unattributed: 0 });
+    expect(data.account?.estimateExcess).toBeCloseTo(2.41);
+    expect(data.members.find((member) => member.id === 1)?.used).toBe(1.86);
+    expect(data.members.find((member) => member.id === 2)?.used).toBe(1.55);
+
+    await recordQuota(env, { ...quota(3, now + 2 * DAY), resets_at: new Date(now + 9 * DAY).toISOString() });
+    data = await dashboard();
+    expect(data.account).toMatchObject({ used: 3, unattributed: 3, estimateExcess: 0 });
+    expect(data.members.every((member) => member.used === 0 && member.weeklyTokens === 0)).toBe(true);
 });

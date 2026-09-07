@@ -6,7 +6,7 @@ import { recordQuota } from '../worker/index';
 import { DAY } from '../worker/batches';
 import type { DashboardData } from '../src/types';
 
-it('counts legacy uploads once while keeping account quota unattributed', async () => {
+it('estimates legacy uploads once without assigning unrelated account quota', async () => {
     const now = Date.now();
     const token = crypto.randomUUID();
     await env.DB.prepare('INSERT INTO devices (id, member_id, token_hash, name, platform, created_at) VALUES (?, 1, ?, ?, ?, ?)')
@@ -57,6 +57,11 @@ it('counts legacy uploads once while keeping account quota unattributed', async 
     });
     expect(result.status).toBe(200);
     const data = (await result.json()) as DashboardData;
-    expect(data.account).toMatchObject({ used: 14, unattributed: 14 });
-    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 0, shareUsed: 0, weeklyTokens: 1100, weeklyCost: 0.006 });
+    expect(data.account).toMatchObject({ used: 14, unattributed: 13.4 });
+    expect(data.members.find((member) => member.id === 1)).toMatchObject({
+        used: 0.6,
+        estimateIncomplete: true,
+        weeklyTokens: 1100,
+        weeklyCost: 0.006,
+    });
 });

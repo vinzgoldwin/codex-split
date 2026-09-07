@@ -14,6 +14,7 @@ export interface Member {
     allocation: number;
     used: number;
     shareUsed: number;
+    estimateIncomplete: boolean;
     weeklyTokens: number | null;
     weeklyCost: number;
     todayCost: number;
@@ -25,7 +26,7 @@ export interface Member {
 
 export interface DashboardData {
     viewer: { id: number; name: string };
-    account: { used: number; resetsAt: string; sampledAt: string; unattributed: number } | null;
+    account: { used: number; resetsAt: string; sampledAt: string; unattributed: number; estimateExcess: number } | null;
     members: Member[];
     warningPercent: number;
 }
