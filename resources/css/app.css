@@ -220,7 +220,7 @@ a {
 }
 .table-row {
     display: grid;
-    grid-template-columns: 1fr 1.45fr 1.3fr 0.75fr;
+    grid-template-columns: minmax(140px, 1fr) minmax(200px, 1.2fr) minmax(360px, 2fr) minmax(80px, 0.5fr);
     gap: 24px;
     align-items: center;
     min-height: 64px;
@@ -302,7 +302,7 @@ a {
 .device-details summary {
     min-width: 0;
     display: grid;
-    grid-template-columns: 8px minmax(0, 1fr);
+    grid-template-columns: 8px minmax(100px, 1fr) auto;
     gap: 8px;
     align-items: center;
     list-style: none;
@@ -315,6 +315,16 @@ a {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+.device-version {
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+.device-version.current {
+    color: #81d8a2;
+}
+.device-version.outdated {
+    color: #ffb454;
 }
 .device-meta {
     display: flex;
@@ -486,6 +496,16 @@ a {
     .reset-copy {
         font-size: 12px;
     }
+    .command-panel {
+        width: min(430px, calc(100vw - 28px));
+    }
+    .unattributed-summary {
+        flex-direction: column;
+        gap: 4px;
+    }
+}
+
+@media (max-width: 1000px) {
     .table-header {
         display: none;
     }
@@ -500,11 +520,14 @@ a {
     .member-devices {
         grid-column: 1 / -1;
     }
-    .command-panel {
-        width: min(430px, calc(100vw - 28px));
+}
+
+@media (max-width: 480px) {
+    .device-details summary {
+        grid-template-columns: 8px minmax(0, 1fr);
+        row-gap: 3px;
     }
-    .unattributed-summary {
-        flex-direction: column;
-        gap: 4px;
+    .device-version {
+        grid-column: 2;
     }
 }

@@ -137,6 +137,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
     await settleQuota(env);
     const window = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY sampled_at DESC LIMIT 1').first<QuotaWindowRow>();
     const activeMembers = await env.DB.prepare('SELECT id, name, active FROM members WHERE active = 1 ORDER BY name').all<MemberRow>();
+    const activeShare = activeMembers.results.length ? Math.round((100 / activeMembers.results.length) * 1000) / 1000 : 0;
 
     type MemberUsageRow = MemberRow & { allocation_percent: number; used_percent: number };
     const windowMembers = window
@@ -152,7 +153,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
         : { results: [] as MemberUsageRow[] };
 
     const devices = await env.DB.prepare(
-        `SELECT id, member_id, name, platform, last_seen_at
+        `SELECT id, member_id, name, platform, agent_version, last_seen_at
          FROM devices WHERE revoked_at IS NULL ORDER BY name`,
     ).all<DeviceRow>();
     const now = Date.now();
@@ -202,14 +203,15 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
         .sort((left, right) => left.name.localeCompare(right.name))
         .map((member) => {
             const periods = periodUsageByMember.get(member.id);
+            const allocation = member.active === 1 ? activeShare : 0;
 
             return {
                 id: member.id,
                 name: member.name,
                 active: member.active === 1,
-                allocation: member.allocation_percent,
+                allocation,
                 used: member.used_percent,
-                shareUsed: member.allocation_percent > 0 ? (member.used_percent / member.allocation_percent) * 100 : 0,
+                shareUsed: allocation > 0 ? (member.used_percent / allocation) * 100 : 0,
                 pricingIncomplete: (periods?.incomplete_entries || 0) > 0 || (windowUsageByMember.get(member.id)?.incomplete_entries || 0) > 0,
                 weeklyCost: (windowUsageByMember.get(member.id)?.cost || 0) / 1_000_000,
                 weeklyTokens: window ? windowUsageByMember.get(member.id)?.tokens || 0 : null,
@@ -221,6 +223,7 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
                     id: row.id,
                     name: row.name,
                     platform: row.platform,
+                    agentVersion: row.agent_version,
                     lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
                     online: row.last_seen_at
                         ? row.last_seen_at >
@@ -255,7 +258,7 @@ async function addMember(request: Request, env: Env): Promise<Response> {
         const member = await env.DB.prepare('INSERT INTO members (name, active, created_at, updated_at) VALUES (?, 1, ?, ?) RETURNING id, name')
             .bind(name, now, now)
             .first<{ id: number; name: string }>();
-        return response({ member, message: 'Member added. Their equal share begins next weekly reset.' }, 201);
+        return response({ member, message: 'Member added. The weekly split has been updated.' }, 201);
     } catch (error) {
         if (String(error).includes('UNIQUE')) throw new ApiError(409, 'A member with that name already exists.');
         throw error;
@@ -273,7 +276,7 @@ async function deactivateMember(request: Request, env: Env, memberId: number): P
         env.DB.prepare('UPDATE members SET active = 0, deactivated_at = ?, updated_at = ? WHERE id = ? AND active = 1').bind(now, now, memberId),
         env.DB.prepare('UPDATE devices SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL').bind(now, memberId),
     ]);
-    return response({ message: 'Member deactivated. The current weekly split is unchanged.' });
+    return response({ message: 'Member deactivated. The weekly split has been updated.' });
 }
 
 async function revokeDevice(request: Request, env: Env, deviceId: string): Promise<Response> {

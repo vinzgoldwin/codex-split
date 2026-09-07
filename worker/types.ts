@@ -20,6 +20,7 @@ export interface DeviceRow {
     member_id: number;
     name: string;
     platform: string;
+    agent_version: string | null;
     last_seen_at: number | null;
 }
 

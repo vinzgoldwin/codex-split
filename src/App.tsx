@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { api, ApiRequestError } from './api';
+import { DeviceVersion } from './DeviceVersion';
 import type { DashboardData, MemberOption } from './types';
 
 const tokenFormatter = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
@@ -320,6 +321,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                                 <span className="device-label" title={device.name}>
                                                     {device.name}
                                                 </span>
+                                                <DeviceVersion version={device.agentVersion} />
                                             </summary>
                                             <div className="device-meta">
                                                 <span>{compactRelativeTime(device.lastSeenAt)}</span>

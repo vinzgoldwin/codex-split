@@ -2,6 +2,7 @@ export interface Device {
     id: string;
     name: string;
     platform: string;
+    agentVersion: string | null;
     lastSeenAt: string | null;
     online: boolean;
 }

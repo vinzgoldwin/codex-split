@@ -18,6 +18,43 @@ async function login(memberId = 1) {
 }
 
 describe('Codex Split Worker', () => {
+    it('updates the current weekly split when a member is added', async () => {
+        const cookie = await login();
+        const now = Date.now();
+        const window = await env.DB.prepare(
+            `INSERT INTO quota_windows
+             (reset_at, duration_minutes, used_percent, baseline_used_percent, sampled_at, created_at, attribution_sampled_at, attribution_used_percent)
+             VALUES (?, 10080, 0, 0, ?, ?, ?, 0) RETURNING id`,
+        )
+            .bind(now + 7 * 24 * 60 * 60 * 1000, now, now, now)
+            .first<{ id: number }>();
+        await env.DB.batch(
+            [1, 2, 3].map((memberId) =>
+                env.DB.prepare('INSERT INTO quota_window_members (quota_window_id, member_id, allocation_percent) VALUES (?, ?, 33.333)').bind(
+                    window!.id,
+                    memberId,
+                ),
+            ),
+        );
+
+        try {
+            const added = await request('/api/members', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Cookie: cookie },
+                body: JSON.stringify({ name: 'Jeremy' }),
+            });
+            expect(added.status).toBe(201);
+
+            const dashboard = await request('/api/dashboard', { headers: { Cookie: cookie } });
+            const data = (await dashboard.json()) as DashboardData;
+            expect(data.members).toHaveLength(4);
+            expect(data.members.map((member) => member.allocation)).toEqual([25, 25, 25, 25]);
+        } finally {
+            await env.DB.prepare('DELETE FROM quota_windows WHERE id = ?').bind(window!.id).run();
+            await env.DB.prepare("DELETE FROM members WHERE name = 'Jeremy'").run();
+        }
+    });
+
     it('rejects an incorrect tracker password', async () => {
         const result = await request('/api/session', {
             method: 'POST',
@@ -123,6 +160,7 @@ describe('Codex Split Worker', () => {
         expect(data.account?.used).toBe(46);
         expect(kevin).toMatchObject({ allocation: 33.333, weeklyTokens: 1100 });
         expect(kevin?.devices).toHaveLength(1);
+        expect(kevin?.devices[0].agentVersion).toBe('0.1.0');
         expect(darius).toMatchObject({ allocation: 33.333, weeklyTokens: 0 });
         const rawCost = await env.DB.prepare('SELECT SUM(estimated_cost_micros) AS cost FROM usage_entries').first<{ cost: number }>();
         const rawTokens = await env.DB.prepare('SELECT SUM(input_tokens + output_tokens) AS tokens FROM usage_entries').first<{ tokens: number }>();
