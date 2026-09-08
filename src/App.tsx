@@ -232,7 +232,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                     minute: '2-digit',
                                 }).format(new Date(account.resetsAt))}
                             </span>
-                            <small className="updated-at">Updated {relativeTime(account.sampledAt)}</small>
+                            <small className="updated-at">Updated {relativeTime(account.sampledAt)} · Refreshes every 5 minutes</small>
                             <small className="member-split">
                                 {members.length} {members.length === 1 ? 'member' : 'members'}
                                 {weeklyShare ? `, ${weeklyShare.toFixed(1)}% each` : ''}
