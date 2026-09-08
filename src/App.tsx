@@ -368,12 +368,12 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                     ))}
                 </div>
                 {account && (
-                    <div className="unattributed-summary" title="The remainder includes unreported activity and estimation error.">
-                        <strong>{account.estimateExcess > 0 ? 'Estimate difference' : 'Unattributed estimate'}</strong>
+                    <div className="unattributed-summary" title="This difference cannot identify unknown devices or their usage.">
+                        <strong>Unexplained difference</strong>
                         <span>
                             {account.estimateExcess > 0
                                 ? `Member estimates exceed the account reading by ${account.estimateExcess.toFixed(2)} percentage points.`
-                                : `~${account.unattributed.toFixed(2)}% account`}
+                                : `~${account.unattributed.toFixed(2)}% account · estimation error or unreported activity`}
                         </span>
                     </div>
                 )}

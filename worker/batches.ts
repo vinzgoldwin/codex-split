@@ -77,9 +77,19 @@ export function summaryStatements(
     return statements;
 }
 
-/** Reprice at most one retained batch per invocation; summaries older than retention stay fixed. */
+/** Reconcile one retained batch's prices or newly discovered quota window. */
 export async function repriceBatch(env: Env): Promise<boolean> {
-    const batch = await env.DB.prepare('SELECT * FROM usage_batches WHERE pricing_version != ? ORDER BY id LIMIT 1')
+    const batch = await env.DB.prepare(
+        `SELECT * FROM usage_batches WHERE pricing_version != ? OR (
+            EXISTS (SELECT 1 FROM json_each(contributions_json) WHERE json_extract(value, '$.window') IS NULL)
+            AND EXISTS (
+                SELECT 1 FROM json_each(usage_json) u JOIN quota_windows w
+                ON json_extract(u.value, '$.recorded_at') >= strftime('%Y-%m-%dT%H:%M:%fZ', (w.reset_at - w.duration_minutes * 60000) / 1000.0, 'unixepoch')
+                AND json_extract(u.value, '$.recorded_at') < strftime('%Y-%m-%dT%H:%M:%fZ', w.reset_at / 1000.0, 'unixepoch')
+                WHERE NOT EXISTS (SELECT 1 FROM json_each(contributions_json) c WHERE json_extract(c.value, '$.window') = w.id)
+            )
+        ) ORDER BY id LIMIT 1`,
+    )
         .bind(PRICING_VERSION)
         .first<{ id: number; member_id: number; usage_json: string; contributions_json: string; pricing_version: string }>();
     if (!batch) return false;
@@ -99,15 +109,14 @@ export async function repriceBatch(env: Env): Promise<boolean> {
             delta.set(key, item);
         }
     }
-    const guard = 'EXISTS (SELECT 1 FROM usage_batches WHERE id = ? AND pricing_version = ?)';
+    // A window-only correction keeps the price version, so compare the old contributions too.
+    const guard = 'EXISTS (SELECT 1 FROM usage_batches WHERE id = ? AND pricing_version = ? AND contributions_json = ?)';
+    const guardArgs = [batch.id, batch.pricing_version, batch.contributions_json];
     await env.DB.batch([
-        ...summaryStatements(env, batch.member_id, [...delta.values()], guard, [batch.id, batch.pricing_version]),
-        env.DB.prepare('UPDATE usage_batches SET contributions_json = ?, pricing_version = ? WHERE id = ? AND pricing_version = ?').bind(
-            JSON.stringify(next),
-            PRICING_VERSION,
-            batch.id,
-            batch.pricing_version,
-        ),
+        ...summaryStatements(env, batch.member_id, [...delta.values()], guard, guardArgs),
+        env.DB.prepare(
+            'UPDATE usage_batches SET contributions_json = ?, pricing_version = ? WHERE id = ? AND pricing_version = ? AND contributions_json = ?',
+        ).bind(JSON.stringify(next), PRICING_VERSION, ...guardArgs),
     ]);
     return true;
 }

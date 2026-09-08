@@ -453,23 +453,26 @@ async function recordQuota(env: Env, quota: QuotaInput): Promise<QuotaWindowRow>
             if (members.results.length) {
                 await env.DB.batch(
                     members.results.map((member) =>
-                        env.DB.prepare('INSERT INTO quota_window_members (quota_window_id, member_id, allocation_percent) VALUES (?, ?, ?)').bind(
-                            window!.id,
-                            member.id,
-                            share,
-                        ),
+                        env.DB.prepare(
+                            'INSERT OR IGNORE INTO quota_window_members (quota_window_id, member_id, allocation_percent) VALUES (?, ?, ?)',
+                        ).bind(window!.id, member.id, share),
                     ),
                 );
             }
         }
     }
 
-    await env.DB.prepare(
-        `UPDATE quota_windows SET duration_minutes = ?, used_percent = ?, sampled_at = ?
+    await env.DB.batch([
+        env.DB.prepare('INSERT OR IGNORE INTO quota_samples (quota_window_id, sampled_at, used_percent) VALUES (?, ?, ?)').bind(
+            window.id,
+            sampledAt,
+            quota.used_percent,
+        ),
+        env.DB.prepare(
+            `UPDATE quota_windows SET duration_minutes = ?, used_percent = ?, sampled_at = ?
          WHERE id = ? AND sampled_at <= ?`,
-    )
-        .bind(quota.window_duration_mins, quota.used_percent, sampledAt, window.id, sampledAt)
-        .run();
+        ).bind(quota.window_duration_mins, quota.used_percent, sampledAt, window.id, sampledAt),
+    ]);
 
     return window;
 }
@@ -697,7 +700,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (method === 'GET' && path === '/api/dashboard') return dashboard(request, env);
     if (method === 'POST' && path === '/api/members') return addMember(request, env);
     if (method === 'POST' && path === '/api/pairings') return createPairing(request, env);
-    if (method === 'POST' && path === '/api/sync') return sync(request, env);
+    if (method === 'POST' && path === '/api/sync') {
+        const result = await sync(request, env);
+        // One bounded reconciliation per successful upload also drains late-window reports.
+        await repriceBatch(env);
+        return result;
+    }
 
     let match = path.match(/^\/api\/members\/(\d+)$/);
     if (method === 'DELETE' && match) return deactivateMember(request, env, Number(match[1]));
