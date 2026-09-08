@@ -19,7 +19,7 @@ export function DeviceVersion({ version }: { version: string | null }) {
     return (
         <span
             className={`device-version${status === 'Update available' ? ' outdated' : status === 'Current' ? ' current' : ''}`}
-            title={`Last reported collector version. Latest release: ${latestVersion}`}
+            title={`Last reported version. Latest available: ${latestVersion}`}
         >
             {version && `${version} · `}
             {status}

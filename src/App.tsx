@@ -58,7 +58,7 @@ function Login({ members, onLogin }: { members: MemberOption[]; onLogin: () => P
                 <a className="wordmark" href="/">
                     CODEX / SPLIT
                 </a>
-                <h1>Who is using this device?</h1>
+                <h1>Log in</h1>
                 <label htmlFor="user">Member</label>
                 <select id="user" value={memberId} onChange={(event) => setMemberId(Number(event.target.value))}>
                     {members.map((member) => (
@@ -71,7 +71,7 @@ function Login({ members, onLogin }: { members: MemberOption[]; onLogin: () => P
                 <input id="password" type="password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} />
                 {error && <span className="field-error">{error}</span>}
                 <button type="submit" disabled={working || !memberId}>
-                    {working ? 'Checking…' : 'Continue'}
+                    {working ? 'Logging in…' : 'Log in'}
                 </button>
             </form>
         </main>
@@ -239,7 +239,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                             </small>
                         </>
                     ) : (
-                        <span>Waiting for the first connected device</span>
+                        <span>Waiting for a usage report</span>
                     )}
                 </div>
             </section>
@@ -250,7 +250,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                         <details className="action-menu">
                             <summary>Add device</summary>
                             <div className="action-panel command-panel">
-                                <strong>On the new device</strong>
+                                <strong>Run this on the new device</strong>
                                 <code>{installCommand}</code>
                                 <span>Confirm the ChatGPT account, then choose the member using this device.</span>
                             </div>
@@ -271,7 +271,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                         <span>Member</span>
                         <span>Estimated usage</span>
                         <span>Devices</span>
-                        <span>Weekly cost</span>
+                        <span title="Weekly estimate at API token rates, not your subscription bill.">Weekly API cost</span>
                     </div>
                     {members.map((member) => (
                         <div className="member-group" key={member.id}>
@@ -297,25 +297,29 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                         <span
                                             title={
                                                 member.estimateIncomplete
-                                                    ? 'Partial estimate: some reports have missing model or service tier details.'
-                                                    : 'Estimated from this member’s recorded usage using a fixed conversion.'
+                                                    ? 'Some model rates or speed settings are missing, so this estimate may be low.'
+                                                    : "Estimated from usage reported by this member's devices."
                                             }
                                         >
-                                            {account ? `~${member.used.toFixed(2)}% account` : 'Not available'}
+                                            {account ? `~${member.used.toFixed(2)}% of account` : 'No report yet'}
                                         </span>
-                                        {account && <small>~{member.shareUsed.toFixed(0)}% share</small>}
+                                        {account && (
+                                            <small title="Estimated percentage of this member's weekly allowance used.">
+                                                ~{member.shareUsed.toFixed(0)}% of share
+                                            </small>
+                                        )}
                                     </div>
                                     <div className="usage-summary">
                                         <small>
                                             {member.weeklyTokens === null
                                                 ? 'No weekly report'
                                                 : `${tokenFormatter.format(member.weeklyTokens)} tokens`}
-                                            {member.estimateIncomplete && ' · partial estimate'}
+                                            {member.estimateIncomplete && ' · some details missing'}
                                         </small>
                                     </div>
                                 </div>
                                 <div className="member-devices">
-                                    {member.devices.length === 0 && <span className="no-devices">None</span>}
+                                    {member.devices.length === 0 && <span className="no-devices">No devices</span>}
                                     {member.devices.map((device) => (
                                         <details className="device-details" key={device.id}>
                                             <summary>
@@ -326,16 +330,16 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                                 <DeviceVersion version={device.agentVersion} />
                                             </summary>
                                             <div className="device-meta">
-                                                <span>{compactRelativeTime(device.lastSeenAt)}</span>
+                                                <span>Last report: {compactRelativeTime(device.lastSeenAt)}</span>
                                                 <button
                                                     className="text-button danger-text"
                                                     onClick={() => {
-                                                        if (window.confirm(`Revoke ${device.name}?`)) {
-                                                            void mutate(`/api/devices/${device.id}`, { method: 'DELETE' }, 'Device revoked.');
+                                                        if (window.confirm(`Disconnect ${device.name}? It will stop sending usage reports.`)) {
+                                                            void mutate(`/api/devices/${device.id}`, { method: 'DELETE' }, 'Device disconnected.');
                                                         }
                                                     }}
                                                 >
-                                                    Revoke
+                                                    Disconnect
                                                 </button>
                                             </div>
                                         </details>
@@ -344,7 +348,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                 <details className="cost-details">
                                     <summary>${member.weeklyCost.toFixed(2)}</summary>
                                     <div className="cost-panel">
-                                        <span className="cost-context">Estimated API-equivalent values</span>
+                                        <span className="cost-context">Estimates at API rates</span>
                                         <div>
                                             <span>Today</span>
                                             <strong>${member.todayCost.toFixed(2)}</strong>
@@ -358,7 +362,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                             <strong>{tokenFormatter.format(member.todayTokens)}</strong>
                                         </div>
                                         <div>
-                                            <span>Tokens, 30 days</span>
+                                            <span>Tokens in the last 30 days</span>
                                             <strong>{tokenFormatter.format(member.thirtyDayTokens)}</strong>
                                         </div>
                                     </div>
@@ -368,12 +372,15 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                     ))}
                 </div>
                 {account && (
-                    <div className="unattributed-summary" title="This difference cannot identify unknown devices or their usage.">
-                        <strong>Unexplained difference</strong>
+                    <div
+                        className="unattributed-summary"
+                        title="Account usage minus the combined member estimates."
+                    >
+                        <strong>Difference from account total</strong>
                         <span>
                             {account.estimateExcess > 0
-                                ? `Member estimates exceed the account reading by ${account.estimateExcess.toFixed(2)} percentage points.`
-                                : `~${account.unattributed.toFixed(2)}% account · estimation error or unreported activity`}
+                                ? `Estimates are ${account.estimateExcess.toFixed(2)} percentage points above account usage.`
+                                : `~${account.unattributed.toFixed(2)}% · missing reports or estimation error`}
                         </span>
                     </div>
                 )}
