@@ -372,10 +372,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                     ))}
                 </div>
                 {account && (
-                    <div
-                        className="unattributed-summary"
-                        title="Account usage minus the combined member estimates."
-                    >
+                    <div className="unattributed-summary" title="Account usage minus the combined member estimates.">
                         <strong>Difference from account total</strong>
                         <span>
                             {account.estimateExcess > 0
