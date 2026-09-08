@@ -314,7 +314,6 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                             {member.weeklyTokens === null
                                                 ? 'No weekly report'
                                                 : `${tokenFormatter.format(member.weeklyTokens)} tokens`}
-                                            {member.estimateIncomplete && ' · some details missing'}
                                         </small>
                                     </div>
                                 </div>
@@ -372,12 +371,15 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                     ))}
                 </div>
                 {account && (
-                    <div className="unattributed-summary" title="Account usage minus the combined member estimates.">
-                        <strong>Difference from account total</strong>
+                    <div
+                        className="unattributed-summary"
+                        title="The difference between account usage and member estimates. It can include unreported usage or estimation error."
+                    >
+                        <strong>Usage gap</strong>
                         <span>
                             {account.estimateExcess > 0
                                 ? `Estimates are ${account.estimateExcess.toFixed(2)} percentage points above account usage.`
-                                : `~${account.unattributed.toFixed(2)}% · missing reports or estimation error`}
+                                : `~${account.unattributed.toFixed(2)}% of account`}
                         </span>
                     </div>
                 )}
