@@ -54,7 +54,7 @@ it('keeps member estimates independent of account movements, other members, dela
     };
     await send(tokens[0], { sequence: 1, usage: [usage], quota: quota(44) });
     const before = (await dashboard()).members.find((member) => member.id === 1)!;
-    expect(before).toMatchObject({ weeklyTokens: 1200, todayTokens: 0, thirtyDayTokens: 1200 });
+    expect(before).toMatchObject({ weeklyTokens: 1200, todayTokens: 0 });
     expect(before).toMatchObject({ used: 0.62, estimateIncomplete: false });
     expect(before.shareUsed).toBeCloseTo((0.62 / before.allocation) * 100);
     expect((await dashboard()).account).toMatchObject({ used: 44, unattributed: 43.38, estimateExcess: 0 });
@@ -87,7 +87,7 @@ it('keeps member estimates independent of account movements, other members, dela
     await send(tokens[0], { sequence: 4, usage: [], quota: quota(10, now - 1000) });
     data = await dashboard();
     expect(data.account?.used).toBe(88);
-    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 1.86, weeklyTokens: 3600, todayTokens: 0, thirtyDayTokens: 3600 });
+    expect(data.members.find((member) => member.id === 1)).toMatchObject({ used: 1.86, weeklyTokens: 3600, todayTokens: 0 });
     expect(data.members.find((member) => member.id === 2)?.weeklyTokens).toBe(1200);
 
     // The retired allocation column must never affect the new estimate.

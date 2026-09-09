@@ -4,7 +4,6 @@ export interface Env {
     AUTH_SECRET: string;
     CHATGPT_ACCOUNT_EMAIL: string;
     TRACKER_WARNING_PERCENT: string;
-    RETENTION_DAYS: string;
     QUOTA_WEIGHT_PER_PERCENT: string;
     SYNC_INTERVAL_SECONDS?: string;
     IDLE_INTERVAL_SECONDS?: string;

@@ -12,7 +12,6 @@
     ],
     "vars": {
         "TRACKER_WARNING_PERCENT": "90",
-        "RETENTION_DAYS": "30",
         "QUOTA_WEIGHT_PER_PERCENT": "13200000",
         "SYNC_INTERVAL_SECONDS": "60",
         "IDLE_INTERVAL_SECONDS": "60",

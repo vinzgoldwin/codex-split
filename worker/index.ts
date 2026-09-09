@@ -38,8 +38,6 @@ interface MemberPeriodUsageRow {
     member_id: number;
     today_cost: number;
     today_tokens: number;
-    thirty_day_cost: number;
-    thirty_day_tokens: number;
     incomplete_entries: number;
 }
 
@@ -159,18 +157,16 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
     const todayStart = Math.floor(now / dayMs) * dayMs;
-    const thirtyDayStart = todayStart - 29 * dayMs;
     const periodUsage = await env.DB.prepare(
         `SELECT member_id,
-                SUM(CASE WHEN day_start = ? THEN estimated_cost_micros ELSE 0 END) AS today_cost,
-                SUM(CASE WHEN day_start = ? THEN input_tokens + output_tokens ELSE 0 END) AS today_tokens,
-                SUM(estimated_cost_micros) AS thirty_day_cost,
-                SUM(input_tokens + output_tokens) AS thirty_day_tokens, SUM(incomplete_entries) AS incomplete_entries
+                SUM(estimated_cost_micros) AS today_cost,
+                SUM(input_tokens + output_tokens) AS today_tokens,
+                SUM(incomplete_entries) AS incomplete_entries
          FROM member_usage_days
-         WHERE day_start >= ?
+         WHERE day_start = ?
          GROUP BY member_id`,
     )
-        .bind(todayStart, todayStart, thirtyDayStart)
+        .bind(todayStart)
         .all<MemberPeriodUsageRow>();
     const windowUsage = window
         ? await env.DB.prepare(
@@ -222,8 +218,6 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
                 weeklyTokens: window ? weekly?.tokens || 0 : null,
                 todayCost: (periods?.today_cost || 0) / 1_000_000,
                 todayTokens: periods?.today_tokens || 0,
-                thirtyDayCost: (periods?.thirty_day_cost || 0) / 1_000_000,
-                thirtyDayTokens: periods?.thirty_day_tokens || 0,
                 devices: (devicesByMember.get(member.id) || []).map((row) => ({
                     id: row.id,
                     name: row.name,
@@ -459,6 +453,22 @@ async function recordQuota(env: Env, quota: QuotaInput): Promise<QuotaWindowRow>
                     ),
                 );
             }
+
+            const startsAt = new Date(window.reset_at - window.duration_minutes * 60_000).toISOString();
+            const resetsAt = new Date(window.reset_at).toISOString();
+            await env.DB.prepare(
+                `UPDATE usage_batches SET needs_reprice = 1
+                 WHERE EXISTS (
+                     SELECT 1 FROM json_each(contributions_json)
+                     WHERE json_extract(value, '$.window') IS NULL
+                 ) AND EXISTS (
+                     SELECT 1 FROM json_each(usage_json)
+                     WHERE json_extract(value, '$.recorded_at') >= ?
+                       AND json_extract(value, '$.recorded_at') < ?
+                 )`,
+            )
+                .bind(startsAt, resetsAt)
+                .run();
         }
     }
 
@@ -528,8 +538,8 @@ async function syncRequests(env: Env, currentDevice: DeviceRow, data: Record<str
         statements.push(
             env.DB.prepare(
                 `INSERT INTO usage_batches
-        (device_id, member_id, batch_id, sequence, usage_json, contributions_json, pricing_version, created_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${guard}`,
+        (device_id, member_id, batch_id, sequence, usage_json, contributions_json, pricing_version, needs_reprice, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${guard}`,
             ).bind(
                 currentDevice.id,
                 currentDevice.member_id,
@@ -538,6 +548,7 @@ async function syncRequests(env: Env, currentDevice: DeviceRow, data: Record<str
                 JSON.stringify(usages),
                 JSON.stringify(totals),
                 PRICING_VERSION,
+                totals.some((row) => row.window === null) ? 1 : 0,
                 now,
                 ...guardArgs,
             ),
@@ -672,16 +683,25 @@ async function sync(request: Request, env: Env): Promise<Response> {
 }
 
 async function prune(env: Env): Promise<void> {
-    const retention = Number(env.RETENTION_DAYS || 30) * 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const cutoffDay = Math.floor((now - retention) / (24 * 60 * 60 * 1000)) * 24 * 60 * 60 * 1000;
-    await env.DB.batch([
-        env.DB.prepare('DELETE FROM usage_batches WHERE created_at < ?').bind(now - 7 * DAY),
-        env.DB.prepare('DELETE FROM usage_entries WHERE reported_at < ?').bind(now - retention),
-        env.DB.prepare('DELETE FROM member_usage_days WHERE day_start < ?').bind(cutoffDay),
-        env.DB.prepare('DELETE FROM quota_windows WHERE reset_at < ?').bind(now - retention),
-        env.DB.prepare('DELETE FROM pairings WHERE expires_at < ?').bind(now - 24 * 60 * 60 * 1000),
-    ]);
+    const window = await env.DB.prepare('SELECT id, reset_at, duration_minutes FROM quota_windows ORDER BY sampled_at DESC LIMIT 1').first<
+        Pick<QuotaWindowRow, 'id' | 'reset_at' | 'duration_minutes'>
+    >();
+    const statements = [env.DB.prepare('DELETE FROM pairings WHERE expires_at < ?').bind(now - DAY)];
+    if (window) {
+        const startsAt = window.reset_at - window.duration_minutes * 60_000;
+        const startDay = Math.floor(startsAt / DAY) * DAY;
+        statements.push(
+            env.DB.prepare('DELETE FROM usage_batches WHERE created_at < ?').bind(startsAt),
+            env.DB.prepare('DELETE FROM usage_entries WHERE reported_at < ?').bind(startsAt),
+            env.DB.prepare('DELETE FROM member_usage_days WHERE day_start < ?').bind(startDay),
+            env.DB.prepare('DELETE FROM quota_samples WHERE quota_window_id != ?').bind(window.id),
+            env.DB.prepare('DELETE FROM quota_intervals WHERE quota_window_id != ?').bind(window.id),
+            env.DB.prepare('DELETE FROM quota_window_members WHERE quota_window_id != ?').bind(window.id),
+            env.DB.prepare('DELETE FROM quota_windows WHERE id != ?').bind(window.id),
+        );
+    }
+    await env.DB.batch(statements);
 }
 
 async function route(request: Request, env: Env): Promise<Response> {

@@ -353,16 +353,8 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                             <strong>${member.todayCost.toFixed(2)}</strong>
                                         </div>
                                         <div>
-                                            <span>Last 30 days</span>
-                                            <strong>${member.thirtyDayCost.toFixed(2)}</strong>
-                                        </div>
-                                        <div>
                                             <span>Tokens today</span>
                                             <strong>{tokenFormatter.format(member.todayTokens)}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Tokens in the last 30 days</span>
-                                            <strong>{tokenFormatter.format(member.thirtyDayTokens)}</strong>
                                         </div>
                                     </div>
                                 </details>

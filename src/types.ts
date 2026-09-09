@@ -19,8 +19,6 @@ export interface Member {
     weeklyCost: number;
     todayCost: number;
     todayTokens: number;
-    thirtyDayCost: number;
-    thirtyDayTokens: number;
     devices: Device[];
 }
 

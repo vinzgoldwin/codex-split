@@ -113,6 +113,25 @@ it('stores one batch, attributes event dates, deduplicates retries after pruning
             .bind(window!.id)
             .first(),
     ).toEqual(before);
+    const oldWindow = await env.DB.prepare(
+        `INSERT INTO quota_windows
+         (reset_at, duration_minutes, used_percent, baseline_used_percent, sampled_at, created_at)
+         VALUES (?, 10080, 10, 10, ?, ?) RETURNING id`,
+    )
+        .bind(now - 6 * DAY, now - 7 * DAY, now - 7 * DAY)
+        .first<{ id: number }>();
+    await env.DB.batch([
+        env.DB.prepare(
+            `INSERT INTO quota_window_members
+             (quota_window_id, member_id, allocation_percent) VALUES (?, 1, 33.333)`,
+        ).bind(oldWindow!.id),
+        env.DB.prepare('INSERT INTO quota_samples (quota_window_id, sampled_at, used_percent) VALUES (?, ?, 10)').bind(oldWindow!.id, now - 7 * DAY),
+        env.DB.prepare(
+            `INSERT INTO member_usage_days
+             (member_id, day_start, estimated_cost_micros, input_tokens, output_tokens, unknown_entries, incomplete_entries)
+             VALUES (1, ?, 1, 1, 1, 0, 0)`,
+        ).bind(Math.floor((now - 8 * DAY) / DAY) * DAY),
+    ]);
     await env.DB.prepare('UPDATE usage_batches SET created_at = ? WHERE id = ?')
         .bind(now - 8 * DAY, batch!.id)
         .run();
@@ -126,4 +145,7 @@ it('stores one batch, attributes event dates, deduplicates retries after pruning
             .bind(window!.id)
             .first(),
     ).toEqual(before);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM quota_windows').first()).toEqual({ count: 1 });
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM quota_samples').first()).toEqual({ count: 0 });
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM member_usage_days').first()).toEqual({ count: 1 });
 });

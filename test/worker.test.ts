@@ -170,8 +170,6 @@ describe('Codex Split Worker', () => {
             weeklyCost: (rawCost?.cost || 0) / 1_000_000,
             todayCost: (rawCost?.cost || 0) / 1_000_000,
             todayTokens: rawTokens?.tokens,
-            thirtyDayCost: (rawCost?.cost || 0) / 1_000_000,
-            thirtyDayTokens: rawTokens?.tokens,
         });
 
         const secondPairing = await request('/api/pairings', {
