@@ -1,4 +1,4 @@
-import { estimateRequestMicros, estimateUsageWeight, PRICING_VERSION } from './pricing';
+import { estimateRequestMicros, estimateUsageWeight, hasModelPrice, PRICING_VERSION } from './pricing';
 import type { Env, QuotaWindowRow, RequestUsage } from './types';
 
 export const DAY = 86_400_000;
@@ -27,8 +27,9 @@ export function contributions(usages: RequestUsage[], windows: QuotaWindowRow[],
         row.weight += estimateUsageWeight(usage);
         row.input += usage.input_tokens;
         row.output += usage.output_tokens;
-        row.unknown += cost === 0 && usage.input_tokens + usage.output_tokens > 0 ? 1 : 0;
-        row.incomplete += cost === 0 || !['default', 'fast', 'priority'].includes(usage.service_tier) ? 1 : 0;
+        const priced = hasModelPrice(usage.model);
+        row.unknown += !priced && usage.input_tokens + usage.output_tokens > 0 ? 1 : 0;
+        row.incomplete += !priced || !['default', 'fast', 'priority'].includes(usage.service_tier) ? 1 : 0;
         groups.set(key, row);
     }
     return [...groups.values()];

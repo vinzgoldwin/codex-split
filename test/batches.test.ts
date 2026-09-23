@@ -2,7 +2,7 @@ import { SELF } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { sha256 } from '../worker/crypto';
-import { DAY, repriceBatch } from '../worker/batches';
+import { DAY, contributions, repriceBatch } from '../worker/batches';
 import { PRICING_VERSION, estimateRequestMicros, estimateUsageWeight } from '../worker/pricing';
 import { prune } from '../worker/index';
 import type { RequestUsage } from '../worker/types';
@@ -19,6 +19,33 @@ const sample: RequestUsage = {
 };
 
 describe('request pricing', () => {
+    it.each([
+        ['gpt-6-sol', 2_640],
+        ['gpt-6-luna', 132],
+    ])('counts %s in cost and quota weight', (model, expected) => {
+        const usage = {
+            ...sample,
+            model,
+            input_tokens: 1_000,
+            cached_input_tokens: 200,
+            cache_write_input_tokens: 0,
+            output_tokens: 100,
+            reasoning_output_tokens: 0,
+            service_tier: 'default',
+        };
+        expect(contributions([usage], [], Date.now())[0]).toMatchObject({
+            cost: expected,
+            weight: expected,
+            input: 1_000,
+            output: 100,
+            unknown: 0,
+            incomplete: 0,
+        });
+    });
+    it('keeps tiny priced Luna requests complete when their cost rounds to zero', () => {
+        const usage = { ...sample, model: 'gpt-6-luna', input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0 };
+        expect(contributions([usage], [], Date.now())[0]).toMatchObject({ cost: 0, unknown: 0, incomplete: 0 });
+    });
     it('combines long-context, cache writes and fast rates without adding reasoning twice', () => {
         // (180k * 10 + 100k * 1 + 20k * 12.5) * 2 + 10k * 50 * 1.5, then fast.
         expect(estimateRequestMicros(sample)).toBe(10_100_000);
@@ -30,6 +57,7 @@ describe('request pricing', () => {
         expect(estimateRequestMicros(row)).toBe(2_370_000);
         expect(estimateRequestMicros({ ...row, input_tokens: 272_001 })).toBe(4_490_020);
         expect(estimateRequestMicros({ ...row, model: 'future-model' })).toBe(0);
+        expect(estimateRequestMicros({ ...row, model: 'toString' })).toBe(0);
         expect(estimateRequestMicros({ ...row, model: 'gpt-5.6' })).toBe(estimateRequestMicros({ ...row, model: 'gpt-5.6-sol' }));
     });
 });

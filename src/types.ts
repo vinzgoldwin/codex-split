@@ -22,6 +22,13 @@ export interface Member {
     devices: Device[];
 }
 
+export interface ModelCost {
+    model: string;
+    cost: number;
+    tokens: number;
+    incomplete: boolean;
+}
+
 export interface DashboardData {
     viewer: { id: number; name: string };
     account: { used: number; resetsAt: string; sampledAt: string; unattributed: number; estimateExcess: number } | null;

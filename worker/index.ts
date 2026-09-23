@@ -1,5 +1,5 @@
 import { decrypt, encrypt, expiredSessionCookie, randomToken, secretMatches, sessionCookie, sessionMemberId, sha256 } from './crypto';
-import { estimateMicros, PRICING_VERSION } from './pricing';
+import { estimateMicros, estimateRequestMicros, hasModelPrice, PRICING_VERSION } from './pricing';
 import { contributions, summaryStatements, repriceBatch, DAY } from './batches';
 import type { DeviceRow, Env, MemberRow, QuotaInput, QuotaWindowRow, RequestUsage, UsageInput } from './types';
 
@@ -246,6 +246,62 @@ async function dashboard(request: Request, env: Env): Promise<Response> {
             : null,
         members,
         warningPercent: Number(env.TRACKER_WARNING_PERCENT || 90),
+    });
+}
+
+async function memberModels(request: Request, env: Env, memberId: number): Promise<Response> {
+    await viewer(request, env);
+    const member = await env.DB.prepare('SELECT id FROM members WHERE id = ?').bind(memberId).first<{ id: number }>();
+    if (!member) throw new ApiError(404, 'Member not found.');
+    const window = await env.DB.prepare('SELECT * FROM quota_windows ORDER BY sampled_at DESC LIMIT 1').first<QuotaWindowRow>();
+    if (!window) return response({ models: [] });
+
+    const start = window.reset_at - window.duration_minutes * 60_000;
+    const models = new Map<string, { model: string; costMicros: number; tokens: number; incomplete: boolean }>();
+    let lastId = 0;
+    while (true) {
+        const batches = await env.DB.prepare(
+            `SELECT id, usage_json FROM usage_batches
+             WHERE member_id = ? AND created_at >= ? AND id > ?
+             ORDER BY id LIMIT 250`,
+        )
+            .bind(memberId, start, lastId)
+            .all<{ id: number; usage_json: string }>();
+        for (const batch of batches.results) {
+            for (const usage of JSON.parse(batch.usage_json) as RequestUsage[]) {
+                const at = Date.parse(usage.recorded_at);
+                if (at < start || at >= window.reset_at) continue;
+                const item = models.get(usage.model) || { model: usage.model, costMicros: 0, tokens: 0, incomplete: false };
+                const cost = estimateRequestMicros(usage);
+                item.costMicros += cost;
+                item.tokens += usage.input_tokens + usage.output_tokens;
+                item.incomplete ||= !hasModelPrice(usage.model) || !['default', 'fast', 'priority'].includes(usage.service_tier);
+                models.set(usage.model, item);
+            }
+        }
+        if (batches.results.length < 250) break;
+        lastId = batches.results.at(-1)!.id;
+    }
+
+    const legacy = await env.DB.prepare(
+        `SELECT model, SUM(estimated_cost_micros) AS cost, SUM(input_tokens + output_tokens) AS tokens
+         FROM usage_entries WHERE member_id = ? AND reported_at >= ? AND reported_at < ?
+         GROUP BY model`,
+    )
+        .bind(memberId, start, window.reset_at)
+        .all<{ model: string; cost: number; tokens: number }>();
+    for (const row of legacy.results) {
+        const item = models.get(row.model) || { model: row.model, costMicros: 0, tokens: 0, incomplete: false };
+        item.costMicros += row.cost;
+        item.tokens += row.tokens;
+        item.incomplete = true; // Legacy reports have no request size or service tier.
+        models.set(row.model, item);
+    }
+
+    return response({
+        models: [...models.values()]
+            .sort((left, right) => right.costMicros - left.costMicros || left.model.localeCompare(right.model))
+            .map(({ model, costMicros, tokens, incomplete }) => ({ model, cost: costMicros / 1_000_000, tokens, incomplete })),
     });
 }
 
@@ -604,7 +660,7 @@ async function sync(request: Request, env: Env): Promise<Response> {
             sum.output += usage.output_tokens;
             const cost = estimateMicros(usage);
             sum.cost += cost;
-            if (cost === 0) sum.unknown += 1;
+            if (!hasModelPrice(usage.model)) sum.unknown += 1;
             return sum;
         },
         { input: 0, output: 0, cost: 0, unknown: 0 },
@@ -718,6 +774,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (method === 'POST' && path === '/api/session') return login(request, env);
     if (method === 'DELETE' && path === '/api/session') return response({ ok: true }, 200, { 'Set-Cookie': expiredSessionCookie() });
     if (method === 'GET' && path === '/api/dashboard') return dashboard(request, env);
+    let match = path.match(/^\/api\/members\/(\d+)\/models$/);
+    if (method === 'GET' && match) return memberModels(request, env, Number(match[1]));
     if (method === 'POST' && path === '/api/members') return addMember(request, env);
     if (method === 'POST' && path === '/api/pairings') return createPairing(request, env);
     if (method === 'POST' && path === '/api/sync') {
@@ -727,7 +785,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         return result;
     }
 
-    let match = path.match(/^\/api\/members\/(\d+)$/);
+    match = path.match(/^\/api\/members\/(\d+)$/);
     if (method === 'DELETE' && match) return deactivateMember(request, env, Number(match[1]));
     match = path.match(/^\/api\/devices\/([0-9a-f-]+)$/i);
     if (method === 'DELETE' && match) return revokeDevice(request, env, match[1]);

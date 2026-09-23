@@ -392,6 +392,42 @@ a {
 .cost-panel strong {
     font-size: 16px;
 }
+.model-breakdown {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 9px;
+    border-top: 1px solid #353532;
+    padding-top: 12px;
+}
+.model-breakdown h3 {
+    margin: 0;
+    font-size: 12px;
+}
+.model-breakdown > span,
+.model-breakdown small {
+    color: #858580;
+    font-size: 12px;
+}
+.model-cost-list {
+    max-height: 220px;
+    overflow-y: auto;
+}
+.cost-panel .model-cost-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 0;
+}
+.model-cost-row span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+.model-cost-row strong {
+    flex: none;
+    font-size: 12px;
+}
 .status-dot {
     width: 6px;
     height: 6px;

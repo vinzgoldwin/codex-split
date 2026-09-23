@@ -12,4 +12,18 @@ describe('API-equivalent pricing', () => {
             }),
         ).toBe(13_200_000);
     });
+
+    it.each([
+        ['gpt-6-sol', 2_640_000],
+        ['gpt-6-luna', 132_000],
+    ])('prices %s standard token usage', (model, expected) => {
+        expect(
+            estimateMicros({
+                model,
+                input_tokens: 1_000_000,
+                cached_input_tokens: 200_000,
+                output_tokens: 100_000,
+            }),
+        ).toBe(expected);
+    });
 });

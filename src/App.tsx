@@ -1,9 +1,15 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { api, ApiRequestError } from './api';
 import { DeviceVersion } from './DeviceVersion';
-import type { DashboardData, MemberOption } from './types';
+import type { DashboardData, Member, MemberOption, ModelCost } from './types';
 
 const tokenFormatter = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+
+function formatCost(cost: number) {
+    if (cost === 0) return '$0.00';
+    if (cost > 0 && cost < 0.0001) return '<$0.0001';
+    return `$${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+}
 
 function relativeTime(value: string | null) {
     if (!value) return 'Never';
@@ -146,6 +152,62 @@ function PairDevice({ code, onDone }: { code: string; onDone: () => void }) {
                 )}
             </form>
         </main>
+    );
+}
+
+function CostDetails({ member }: { member: Member }) {
+    const [models, setModels] = useState<ModelCost[] | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    async function loadModels() {
+        setLoading(true);
+        setError('');
+        try {
+            const result = await api<{ models: ModelCost[] }>(`/api/members/${member.id}/models`);
+            setModels(result.models);
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : 'Could not load models.');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    return (
+        <details className="cost-details" onToggle={(event) => event.currentTarget.open && void loadModels()}>
+            <summary>{formatCost(member.weeklyCost)}</summary>
+            <div className="cost-panel">
+                <span className="cost-context">Estimates at API rates</span>
+                <div>
+                    <span>Today</span>
+                    <strong>{formatCost(member.todayCost)}</strong>
+                </div>
+                <div>
+                    <span>Tokens today</span>
+                    <strong>{tokenFormatter.format(member.todayTokens)}</strong>
+                </div>
+                <section className="model-breakdown" aria-label="Weekly API cost by model">
+                    <h3>By model</h3>
+                    {loading && !models && <span>Loading…</span>}
+                    {error && <span role="alert">{error}</span>}
+                    {models?.length === 0 && <span>No model data</span>}
+                    {models && models.length > 0 && (
+                        <div className="model-cost-list">
+                            {models.map((row) => (
+                                <div className="model-cost-row" key={row.model}>
+                                    <span title={`${row.model} · ${tokenFormatter.format(row.tokens)} tokens`}>
+                                        {row.model}
+                                        {row.incomplete ? ' *' : ''}
+                                    </span>
+                                    <strong>{formatCost(row.cost)}</strong>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {models?.some((row) => row.incomplete) && <small>* Partial estimate</small>}
+                </section>
+            </div>
+        </details>
     );
 }
 
@@ -344,20 +406,7 @@ function Dashboard({ data, reload, onLogout }: { data: DashboardData; reload: ()
                                         </details>
                                     ))}
                                 </div>
-                                <details className="cost-details">
-                                    <summary>${member.weeklyCost.toFixed(2)}</summary>
-                                    <div className="cost-panel">
-                                        <span className="cost-context">Estimates at API rates</span>
-                                        <div>
-                                            <span>Today</span>
-                                            <strong>${member.todayCost.toFixed(2)}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Tokens today</span>
-                                            <strong>{tokenFormatter.format(member.todayTokens)}</strong>
-                                        </div>
-                                    </div>
-                                </details>
+                                <CostDetails member={member} />
                             </div>
                         </div>
                     ))}
